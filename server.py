@@ -24,8 +24,39 @@ for d in [UPLOAD_DIR, PROC_DIR, STATIC_DIR]:
     d.mkdir(exist_ok=True)
 
 # ── Modelo YOLO ────────────────────────────────────────────────────────────
-# Cambiar a 'yolov8n.pt' para mayor velocidad o 'yolov8m.pt' para mayor precisión
+# El usuario puede cambiar el modelo desde la UI
 MODEL_NAME = 'yolov8s.pt'
+
+# Modelos disponibles con descripción para la UI
+AVAILABLE_MODELS = {
+    'yolov8n.pt': {
+        'name': 'YOLOv8 Nano',
+        'quality': '⭐⭐ Básica',
+        'speed': '⚡⚡⚡ Muy rápido',
+        'size': '~6 MB',
+        'description': 'Ideal para videos largos o PCs sin GPU. Menor precisión.',
+        'time_10min_cpu': '5-8 min',
+        'time_10min_gpu': '~30 seg',
+    },
+    'yolov8s.pt': {
+        'name': 'YOLOv8 Small',
+        'quality': '⭐⭐⭐ Buena',
+        'speed': '⚡⚡ Rápido',
+        'size': '~22 MB',
+        'description': 'Balance ideal entre velocidad y precisión. Recomendado.',
+        'time_10min_cpu': '8-15 min',
+        'time_10min_gpu': '~1 min',
+    },
+    'yolov8m.pt': {
+        'name': 'YOLOv8 Medium',
+        'quality': '⭐⭐⭐⭐ Alta',
+        'speed': '⚡ Lento',
+        'size': '~50 MB',
+        'description': 'Máxima precisión. Recomendado solo con GPU dedicada.',
+        'time_10min_cpu': '20-35 min',
+        'time_10min_gpu': '~2 min',
+    },
+}
 
 # ── Aplicación FastAPI ─────────────────────────────────────────────────────
 app = FastAPI(title="Basketball Tracker v2.0")
@@ -346,6 +377,33 @@ async def health():
         'ffmpeg': shutil.which('ffmpeg') is not None,
         'jobs_count': len(jobs),
     }
+
+
+@app.get("/models")
+async def list_models():
+    """Devuelve los modelos YOLO disponibles y cuál está activo."""
+    return {
+        'current': MODEL_NAME,
+        'models': AVAILABLE_MODELS,
+    }
+
+
+@app.post("/set_model")
+async def set_model(data: dict):
+    """Cambia el modelo YOLO activo. Se recarga en la próxima detección."""
+    global MODEL_NAME, _model
+    model_name = data.get('model', '')
+    if model_name not in AVAILABLE_MODELS:
+        return JSONResponse(
+            {'error': f'Modelo no válido. Opciones: {list(AVAILABLE_MODELS.keys())}'},
+            status_code=400
+        )
+    if model_name != MODEL_NAME:
+        MODEL_NAME = model_name
+        with _model_lock:
+            _model = None  # Forzar recarga en la próxima detección
+        print(f'🔄 Modelo cambiado a {MODEL_NAME}')
+    return {'ok': True, 'model': MODEL_NAME, 'info': AVAILABLE_MODELS[MODEL_NAME]}
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -591,6 +591,44 @@ body::before {
 }
 .disclaimer-icon { font-size: 24px; flex-shrink: 0; }
 
+/* ===== MODEL SELECTOR ===== */
+.model-selector { margin-bottom: 24px; }
+.model-selector h3 { font-size: 14px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.model-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+.model-card {
+  background: var(--card); border: 2px solid var(--border);
+  border-radius: var(--radius); padding: 16px;
+  cursor: pointer; transition: all .2s;
+  position: relative; overflow: hidden;
+}
+.model-card:hover { border-color: var(--text-muted); transform: translateY(-2px); box-shadow: var(--shadow); }
+.model-card.selected { border-color: var(--accent); background: rgba(249,115,22,0.06); }
+.model-card.selected::after {
+  content: '✓'; position: absolute; top: 10px; right: 12px;
+  background: var(--accent-gradient); color: #fff;
+  width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 800;
+}
+.model-card .model-name { font-size: 15px; font-weight: 700; margin-bottom: 6px; }
+.model-card .model-badge {
+  display: inline-block; font-size: 10px; font-weight: 700;
+  padding: 2px 8px; border-radius: 4px; margin-bottom: 8px;
+  text-transform: uppercase; letter-spacing: .3px;
+}
+.model-card .model-badge.recommended { background: rgba(249,115,22,0.15); color: var(--accent); }
+.model-card .model-badge.fast { background: rgba(63,185,80,0.15); color: var(--green); }
+.model-card .model-badge.pro { background: rgba(188,140,255,0.15); color: var(--purple); }
+.model-card .model-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 10px; }
+.model-meta { display: flex; flex-direction: column; gap: 4px; }
+.model-meta-row { display: flex; justify-content: space-between; font-size: 11px; }
+.model-meta-label { color: var(--text-muted); }
+.model-meta-value { color: var(--text); font-weight: 600; }
+.model-loading { opacity: 0.5; pointer-events: none; }
+
 /* ===== TOAST ===== */
 .toast-container {
   position: fixed; bottom: 24px; right: 24px; z-index: 9999;
@@ -762,6 +800,48 @@ body::before {
         <div class="file-info-row">
           <span class="file-info-label">🆔 Job ID</span>
           <span class="file-info-value" id="detectJobId">—</span>
+        </div>
+      </div>
+
+      <div class="model-selector" id="modelSelector">
+        <h3>🧠 Modelo de Detección</h3>
+        <div class="model-grid" id="modelGrid">
+          <div class="model-card" onclick="selectModel('yolov8n.pt')" id="model-yolov8n.pt">
+            <div class="model-name">YOLOv8 Nano</div>
+            <span class="model-badge fast">Rápido</span>
+            <div class="model-desc">Ideal para videos largos o PCs sin GPU. Menor precisión.</div>
+            <div class="model-meta">
+              <div class="model-meta-row"><span class="model-meta-label">Calidad</span><span class="model-meta-value">⭐⭐ Básica</span></div>
+              <div class="model-meta-row"><span class="model-meta-label">Velocidad</span><span class="model-meta-value">⚡⚡⚡ Muy rápido</span></div>
+              <div class="model-meta-row"><span class="model-meta-label">Tamaño</span><span class="model-meta-value">~6 MB</span></div>
+              <div class="model-meta-row"><span class="model-meta-label">⏱ CPU (10min)</span><span class="model-meta-value">5-8 min</span></div>
+              <div class="model-meta-row"><span class="model-meta-label">⏱ GPU (10min)</span><span class="model-meta-value">~30 seg</span></div>
+            </div>
+          </div>
+          <div class="model-card selected" onclick="selectModel('yolov8s.pt')" id="model-yolov8s.pt">
+            <div class="model-name">YOLOv8 Small</div>
+            <span class="model-badge recommended">Recomendado</span>
+            <div class="model-desc">Balance ideal entre velocidad y precisión. Mejor opción general.</div>
+            <div class="model-meta">
+              <div class="model-meta-row"><span class="model-meta-label">Calidad</span><span class="model-meta-value">⭐⭐⭐ Buena</span></div>
+              <div class="model-meta-row"><span class="model-meta-label">Velocidad</span><span class="model-meta-value">⚡⚡ Rápido</span></div>
+              <div class="model-meta-row"><span class="model-meta-label">Tamaño</span><span class="model-meta-value">~22 MB</span></div>
+              <div class="model-meta-row"><span class="model-meta-label">⏱ CPU (10min)</span><span class="model-meta-value">8-15 min</span></div>
+              <div class="model-meta-row"><span class="model-meta-label">⏱ GPU (10min)</span><span class="model-meta-value">~1 min</span></div>
+            </div>
+          </div>
+          <div class="model-card" onclick="selectModel('yolov8m.pt')" id="model-yolov8m.pt">
+            <div class="model-name">YOLOv8 Medium</div>
+            <span class="model-badge pro">Pro</span>
+            <div class="model-desc">Máxima precisión. Recomendado solo con GPU dedicada.</div>
+            <div class="model-meta">
+              <div class="model-meta-row"><span class="model-meta-label">Calidad</span><span class="model-meta-value">⭐⭐⭐⭐ Alta</span></div>
+              <div class="model-meta-row"><span class="model-meta-label">Velocidad</span><span class="model-meta-value">⚡ Lento</span></div>
+              <div class="model-meta-row"><span class="model-meta-label">Tamaño</span><span class="model-meta-value">~50 MB</span></div>
+              <div class="model-meta-row"><span class="model-meta-label">⏱ CPU (10min)</span><span class="model-meta-value">20-35 min</span></div>
+              <div class="model-meta-row"><span class="model-meta-label">⏱ GPU (10min)</span><span class="model-meta-value">~2 min</span></div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -961,6 +1041,56 @@ async function checkHealth() {
   }
 }
 checkHealth();
+
+/* ======================================================================
+   MODEL SELECTOR
+   ====================================================================== */
+let selectedModel = 'yolov8s.pt';
+
+async function loadModels() {
+  try {
+    const r = await fetch('/models');
+    const d = await r.json();
+    selectedModel = d.current || 'yolov8s.pt';
+    updateModelCards();
+  } catch { /* usa defaults del HTML */ }
+}
+
+function selectModel(modelName) {
+  if (modelName === selectedModel) return;
+  const cards = document.querySelectorAll('.model-card');
+  cards.forEach(c => c.classList.add('model-loading'));
+
+  fetch('/set_model', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: modelName })
+  })
+  .then(r => { if (!r.ok) throw new Error('Error'); return r.json(); })
+  .then(d => {
+    selectedModel = d.model;
+    updateModelCards();
+    showToast(`Modelo cambiado a ${d.info?.name || modelName}`, 'success');
+  })
+  .catch(err => showToast('No se pudo cambiar el modelo', 'error'))
+  .finally(() => {
+    document.querySelectorAll('.model-card').forEach(c => c.classList.remove('model-loading'));
+  });
+}
+
+function updateModelCards() {
+  document.querySelectorAll('.model-card').forEach(c => c.classList.remove('selected'));
+  const active = document.getElementById('model-' + selectedModel);
+  if (active) active.classList.add('selected');
+  // Actualizar texto del botón
+  const names = { 'yolov8n.pt': 'Nano', 'yolov8s.pt': 'Small', 'yolov8m.pt': 'Medium' };
+  const btn = document.getElementById('btnDetect');
+  if (btn && !btn.disabled) {
+    btn.textContent = `🔍 Iniciar Detección con YOLOv8 ${names[selectedModel] || ''}`;
+  }
+}
+
+loadModels();
 
 /* ======================================================================
    STEPPER
