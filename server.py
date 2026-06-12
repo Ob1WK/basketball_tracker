@@ -108,6 +108,8 @@ def _create_job(video_path: str, filename: str) -> dict:
         'annotated_video': None,
         'detection_result': None,
         'error': None,
+        'game_format': '5v5',       # formato del partido: 1v1, 2v2, 3v3, 4v4, 5v5
+        'expected_players': 10,     # jugadores esperados en cancha
         '_raw_track_data': {},
         '_ball_positions': [],
         '_hoop_region': {},
@@ -148,6 +150,104 @@ def _estimate_hoop(ball_positions, h, w):
     radius = float(h * 0.08)
 
     return {"cx": cx, "cy": cy, "radius": radius}
+
+
+def _consolidate_tracks(track_data, expected_players, fps, sample_every):
+    """
+    Consolida tracks fragmentados que probablemente pertenecen a la misma persona.
+    El tracker de YOLO pierde IDs frecuentemente, creando múltiples tracks
+    para una misma persona. Esta función los fusiona.
+
+    Criterios de fusión:
+    - Los tracks NO se solapan temporalmente (o se solapan < 10%)
+    - La última posición de un track está cerca de la primera del siguiente
+    """
+    if len(track_data) <= expected_players:
+        return track_data  # Ya tenemos la cantidad esperada o menos
+
+    # Ordenar tracks por cantidad de frames (descendente)
+    sorted_tids = sorted(
+        track_data.keys(),
+        key=lambda tid: len(track_data[tid]['frames']),
+        reverse=True
+    )
+
+    merged = {}       # tid_principal -> datos fusionados
+    absorbed = set()  # tids que ya fueron absorbidos por otro
+
+    for tid in sorted_tids:
+        if tid in absorbed:
+            continue
+
+        td = track_data[tid]
+        merged_frames = set(td['frames'])
+        merged_bboxes = list(td['bbox_history'])
+
+        # Intentar absorber tracks más pequeños
+        for other_tid in sorted_tids:
+            if other_tid == tid or other_tid in absorbed:
+                continue
+
+            other_td = track_data[other_tid]
+            other_frames = set(other_td['frames'])
+
+            # Calcular solapamiento temporal
+            overlap = len(merged_frames & other_frames)
+            overlap_pct = overlap / max(1, len(other_frames))
+
+            if overlap_pct > 0.1:
+                continue  # Más del 10% de solapamiento = personas distintas
+
+            # Calcular proximidad espacial entre fin de uno e inicio del otro
+            my_bboxes = sorted(merged_bboxes, key=lambda b: b['frame'])
+            other_bboxes = sorted(other_td['bbox_history'], key=lambda b: b['frame'])
+
+            if not my_bboxes or not other_bboxes:
+                continue
+
+            # Verificar si el otro track empieza donde este termina (o viceversa)
+            can_merge = False
+            # Caso 1: otro track empieza después de que termina este
+            my_last = my_bboxes[-1]
+            other_first = other_bboxes[0]
+            time_gap = abs(other_first['frame'] - my_last['frame'])
+            spatial_dist = math.hypot(
+                my_last['cx'] - other_first['cx'],
+                my_last['cy'] - other_first['cy']
+            )
+            # Dentro de 3 segundos y 200px de distancia = misma persona
+            max_time_gap = fps * 3 * sample_every
+            max_spatial_dist = 200
+            if time_gap < max_time_gap and spatial_dist < max_spatial_dist:
+                can_merge = True
+
+            # Caso 2: otro track termina antes de que empiece este
+            if not can_merge:
+                other_last = other_bboxes[-1]
+                my_first = my_bboxes[0]
+                time_gap = abs(my_first['frame'] - other_last['frame'])
+                spatial_dist = math.hypot(
+                    other_last['cx'] - my_first['cx'],
+                    other_last['cy'] - my_first['cy']
+                )
+                if time_gap < max_time_gap and spatial_dist < max_spatial_dist:
+                    can_merge = True
+
+            if can_merge:
+                # Absorber el otro track
+                merged_frames.update(other_frames)
+                merged_bboxes.extend(other_td['bbox_history'])
+                absorbed.add(other_tid)
+
+        # Guardar el track fusionado
+        merged[tid] = {
+            'frames': sorted(merged_frames),
+            'bbox_history': sorted(merged_bboxes, key=lambda b: b['frame']),
+            'thumbnail': td.get('thumbnail'),
+            'first_frame': td.get('first_frame', 0),
+        }
+
+    return merged
 
 
 def _try_merge_audio(original_path: str, annotated_path: str) -> str:
@@ -284,6 +384,31 @@ async def detect_objects(job_id: str):
     threading.Thread(target=_detect_worker, args=(job_id,), daemon=True).start()
 
     return {'status': 'detecting', 'job_id': job_id}
+
+
+@app.post("/configure/{job_id}")
+async def configure_game(job_id: str, data: dict):
+    """
+    Configura el formato del partido antes de la detección.
+    Recibe: { "game_format": "1v1" } donde el valor puede ser 1v1, 2v2, 3v3, 4v4, 5v5.
+    Esto permite filtrar tracks de forma inteligente.
+    """
+    if job_id not in jobs:
+        return JSONResponse({"error": "Job no encontrado"}, status_code=404)
+
+    job = jobs[job_id]
+    game_format = data.get('game_format', '5v5')
+    valid_formats = {'1v1': 2, '2v2': 4, '3v3': 6, '4v4': 8, '5v5': 10}
+
+    if game_format not in valid_formats:
+        return JSONResponse(
+            {'error': f'Formato inválido. Opciones: {list(valid_formats.keys())}'},
+            status_code=400
+        )
+
+    job['game_format'] = game_format
+    job['expected_players'] = valid_formats[game_format]
+    return {'ok': True, 'game_format': game_format, 'expected_players': valid_formats[game_format]}
 
 
 @app.post("/assign_players/{job_id}")
@@ -521,19 +646,49 @@ def _detect_worker(job_id: str):
         # ── Estimar posición del aro ───────────────────────────────────────
         hoop_region = _estimate_hoop(ball_positions, h, w)
 
-        # ── Filtrar tracks con menos de 5 frames (ruido) ──────────────────
-        min_frames = 5
-        valid_tracks = {
+        # ── Filtrado inteligente basado en formato del partido ────────────
+        expected_players = job.get('expected_players', 10)
+        game_format = job.get('game_format', '5v5')
+
+        job['stage'] = 'Consolidando tracks...'
+
+        # Umbral mínimo de frames adaptivo
+        video_duration_frames = total_frames / SAMPLE_EVERY
+        min_frames_pct = max(5, int(video_duration_frames * 0.03))
+        min_frames_time = max(5, int(fps / SAMPLE_EVERY * 2))
+        min_frames = max(min_frames_pct, min_frames_time)
+
+        print(f'📊 Formato: {game_format} ({expected_players} jugadores esperados)')
+        print(f'📊 Tracks crudos: {len(track_data)}, umbral min_frames: {min_frames}')
+
+        # Paso 1: filtrar tracks muy cortos
+        filtered_tracks = {
             tid: td for tid, td in track_data.items()
-            if len(td["frames"]) >= min_frames
+            if len(td['frames']) >= min_frames
         }
+        print(f'📊 Tracks tras filtro básico: {len(filtered_tracks)}')
+
+        # Paso 2: consolidar tracks fragmentados
+        consolidated = _consolidate_tracks(filtered_tracks, expected_players, fps, SAMPLE_EVERY)
+        print(f'📊 Tracks tras consolidación: {len(consolidated)}')
+
+        # Paso 3: limitar a los tracks más relevantes
+        sorted_tracks = sorted(
+            consolidated.items(),
+            key=lambda x: len(x[1]['frames']),
+            reverse=True
+        )
+        max_tracks = min(len(sorted_tracks), expected_players + 4)
+        valid_tracks = dict(sorted_tracks[:max_tracks])
+
+        print(f'✅ Tracks finales mostrados: {len(valid_tracks)}')
 
         # ── Construir resultado de detección ──────────────────────────────
         detection_result = {
             "track_ids": list(valid_tracks.keys()),
             "tracks": {
                 str(tid): {
-                    "thumbnail": td["thumbnail"],
+                    "thumbnail": td.get("thumbnail"),
                     "frame_count": len(td["frames"]),
                     "first_frame": td["first_frame"],
                 } for tid, td in valid_tracks.items()
@@ -543,13 +698,16 @@ def _detect_worker(job_id: str):
             "fps": fps,
             "resolution": f"{w}x{h}",
             "hoop_region": hoop_region,
+            "game_format": game_format,
+            "expected_players": expected_players,
+            "raw_tracks_found": len(track_data),
         }
 
         # ── Guardar resultados en el job ──────────────────────────────────
         job["status"] = "detected"
         job["progress"] = 100
         job["stage"] = "Detección completada"
-        job["detail"] = f"{len(valid_tracks)} jugadores, {len(ball_positions)} detecciones de pelota"
+        job["detail"] = f"{len(valid_tracks)} jugadores (de {len(track_data)} tracks crudos), {len(ball_positions)} detecciones de pelota"
         job["detection_result"] = detection_result
         job["_raw_track_data"] = valid_tracks
         job["_ball_positions"] = ball_positions

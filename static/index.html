@@ -629,6 +629,31 @@ body::before {
 .model-meta-value { color: var(--text); font-weight: 600; }
 .model-loading { opacity: 0.5; pointer-events: none; }
 
+/* ===== GAME FORMAT SELECTOR ===== */
+.format-selector { margin-bottom: 24px; }
+.format-selector h3 { font-size: 14px; font-weight: 700; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.format-selector p { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
+.format-grid {
+  display: flex; gap: 10px; flex-wrap: wrap;
+}
+.format-btn {
+  padding: 10px 20px; border-radius: 10px;
+  background: var(--card); border: 2px solid var(--border);
+  color: var(--text); font-size: 16px; font-weight: 700;
+  font-family: inherit; cursor: pointer;
+  transition: all .2s; min-width: 70px; text-align: center;
+}
+.format-btn:hover { border-color: var(--text-muted); transform: translateY(-2px); }
+.format-btn.selected {
+  border-color: var(--accent); background: rgba(249,115,22,0.1);
+  color: var(--accent); box-shadow: 0 0 12px var(--accent-glow);
+}
+.format-btn .format-label {
+  display: block; font-size: 10px; font-weight: 500;
+  color: var(--text-muted); margin-top: 2px;
+}
+.format-btn.selected .format-label { color: var(--accent2); }
+
 /* ===== TOAST ===== */
 .toast-container {
   position: fixed; bottom: 24px; right: 24px; z-index: 9999;
@@ -800,6 +825,33 @@ body::before {
         <div class="file-info-row">
           <span class="file-info-label">🆔 Job ID</span>
           <span class="file-info-value" id="detectJobId">—</span>
+        </div>
+      </div>
+
+      <div class="format-selector">
+        <h3>🏀 Formato del Partido</h3>
+        <p>Seleccioná el formato para que la IA filtre mejor los jugadores y no detecte espectadores.</p>
+        <div class="format-grid">
+          <button class="format-btn" onclick="setGameFormat('1v1', this)" data-format="1v1">
+            1v1
+            <span class="format-label">2 jugadores</span>
+          </button>
+          <button class="format-btn" onclick="setGameFormat('2v2', this)" data-format="2v2">
+            2v2
+            <span class="format-label">4 jugadores</span>
+          </button>
+          <button class="format-btn selected" onclick="setGameFormat('3v3', this)" data-format="3v3">
+            3v3
+            <span class="format-label">6 jugadores</span>
+          </button>
+          <button class="format-btn" onclick="setGameFormat('4v4', this)" data-format="4v4">
+            4v4
+            <span class="format-label">8 jugadores</span>
+          </button>
+          <button class="format-btn" onclick="setGameFormat('5v5', this)" data-format="5v5">
+            5v5
+            <span class="format-label">10 jugadores</span>
+          </button>
         </div>
       </div>
 
@@ -1093,6 +1145,17 @@ function updateModelCards() {
 loadModels();
 
 /* ======================================================================
+   GAME FORMAT SELECTOR
+   ====================================================================== */
+let gameFormat = '3v3';
+
+function setGameFormat(format, el) {
+  gameFormat = format;
+  document.querySelectorAll('.format-btn').forEach(b => b.classList.remove('selected'));
+  if (el) el.classList.add('selected');
+}
+
+/* ======================================================================
    STEPPER
    ====================================================================== */
 function goToStep(n) {
@@ -1253,13 +1316,25 @@ function listenSSE(jid, onMessage, onDone, onError) {
 function startDetection() {
   const btn = document.getElementById('btnDetect');
   btn.disabled = true;
-  btn.textContent = '⏳ Detectando…';
+  btn.textContent = '⏳ Configurando...';
   document.getElementById('detectProgressWrap').style.display = 'block';
+  document.getElementById('modelSelector').style.display = 'none';
+  document.querySelector('.format-selector').style.display = 'none';
   const startMs = Date.now();
 
-  fetch(`/detect/${jobId}`, { method: 'POST' })
-    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-    .then(() => {
+  // Enviar configuración del formato de juego antes de detectar
+  fetch(`/configure/${jobId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ game_format: gameFormat })
+  })
+  .then(r => { if (!r.ok) throw new Error('Error configurando'); return r.json(); })
+  .then(() => {
+    btn.textContent = '⏳ Detectando…';
+    return fetch(`/detect/${jobId}`, { method: 'POST' });
+  })
+  .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+  .then(() => {
       listenSSE(jobId,
         d => {
           const p = d.progress || 0;
@@ -1314,6 +1389,8 @@ function buildPlayerGrid(dr) {
     <div class="summary-stat"><div class="val">${formatNumber(dr.ball_detections)}</div><div class="lbl">Det. Pelota</div></div>
     <div class="summary-stat"><div class="val">${formatNumber(dr.total_frames)}</div><div class="lbl">Frames</div></div>
     <div class="summary-stat"><div class="val">${dr.resolution || '—'}</div><div class="lbl">Resolución</div></div>
+    ${dr.game_format ? `<div class="summary-stat"><div class="val">${dr.game_format}</div><div class="lbl">Formato</div></div>` : ''}
+    ${dr.raw_tracks_found ? `<div class="summary-stat"><div class="val">${dr.raw_tracks_found}</div><div class="lbl">Tracks crudos</div></div>` : ''}
   `;
   // Player cards
   const grid = document.getElementById('playerGrid');
