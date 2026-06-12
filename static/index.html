@@ -1,0 +1,1608 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Analizá tus partidos de pickup basketball con IA. Estadísticas NBA automáticas desde video. 100% local, sin APIs pagas.">
+<title>PickupStats — Estadísticas de Basketball con IA</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏀</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg-deep: #08090d;
+  --bg: #0d1117;
+  --surface: #161b22;
+  --card: #1c2333;
+  --card-hover: #222b3d;
+  --border: #30363d;
+  --border-focus: #f97316;
+  --accent: #f97316;
+  --accent-glow: rgba(249, 115, 22, 0.3);
+  --accent2: #fb923c;
+  --accent-gradient: linear-gradient(135deg, #f97316, #ea580c);
+  --text: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --green: #3fb950;
+  --red: #f85149;
+  --blue: #58a6ff;
+  --purple: #bc8cff;
+  --gold: #f0c000;
+  --team-a: #58a6ff;
+  --team-b: #f85149;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --shadow: 0 4px 24px rgba(0,0,0,.4);
+  --glass: rgba(22, 27, 34, 0.8);
+  --glass-border: rgba(48, 54, 61, 0.6);
+}
+html { scroll-behavior: smooth; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-deep);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(249,115,22,0.08) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 40% at 80% 100%, rgba(88,166,255,0.04) 0%, transparent 50%);
+  pointer-events: none; z-index: 0;
+}
+
+/* ===== HEADER ===== */
+.header {
+  position: sticky; top: 0; z-index: 100;
+  background: var(--glass);
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--glass-border);
+  padding: 0 24px; height: 64px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.header-left { display: flex; align-items: center; gap: 12px; }
+.logo-ball {
+  font-size: 28px; display: inline-block;
+  animation: ballFloat 3s ease-in-out infinite;
+}
+@keyframes ballFloat {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-4px) rotate(10deg); }
+}
+.logo-text {
+  font-size: 22px; font-weight: 800; letter-spacing: -0.5px;
+  background: var(--accent-gradient); -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent; background-clip: text;
+}
+.logo-sub {
+  font-size: 12px; color: var(--text-muted); font-weight: 500;
+  margin-left: 2px; letter-spacing: 0.2px;
+}
+.header-right { display: flex; align-items: center; gap: 14px; }
+.health-wrap {
+  display: flex; align-items: center; gap: 6px;
+  cursor: help; position: relative;
+}
+.health-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text-muted);
+  transition: background .3s;
+}
+.health-dot.ok { background: var(--green); animation: pulse-dot 2s ease-in-out infinite; }
+.health-dot.err { background: var(--red); }
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(63,185,80,0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(63,185,80,0); }
+}
+.health-label { font-size: 11px; color: var(--text-muted); }
+.health-tooltip {
+  display: none; position: absolute; top: 100%; right: 0; margin-top: 8px;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 16px;
+  font-size: 12px; color: var(--text-secondary);
+  white-space: nowrap; box-shadow: var(--shadow);
+  z-index: 200;
+}
+.health-wrap:hover .health-tooltip { display: block; }
+.health-tooltip p { margin-bottom: 4px; }
+.health-tooltip strong { color: var(--text); }
+.version-badge {
+  font-size: 10px; font-weight: 700; padding: 3px 8px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 20px; color: var(--text-muted); letter-spacing: 0.5px;
+}
+
+/* ===== CONTAINER ===== */
+.container {
+  position: relative; z-index: 1;
+  max-width: 1200px; margin: 0 auto; padding: 24px 20px 80px;
+}
+
+/* ===== STEPPER ===== */
+.stepper {
+  display: flex; align-items: center; justify-content: center;
+  gap: 0; margin-bottom: 36px;
+  padding: 20px 0;
+}
+.step-item {
+  display: flex; align-items: center; gap: 10px;
+  position: relative; cursor: default;
+  transition: opacity .3s;
+}
+.step-circle {
+  width: 40px; height: 40px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700;
+  background: var(--surface); border: 2px solid var(--border);
+  color: var(--text-muted); transition: all .4s ease;
+  position: relative; flex-shrink: 0;
+}
+.step-item.active .step-circle {
+  border-color: var(--accent); color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-glow), 0 0 20px var(--accent-glow);
+  animation: stepPulse 2s ease-in-out infinite;
+}
+@keyframes stepPulse {
+  0%, 100% { box-shadow: 0 0 0 4px var(--accent-glow), 0 0 20px rgba(249,115,22,0.1); }
+  50% { box-shadow: 0 0 0 8px rgba(249,115,22,0.1), 0 0 30px rgba(249,115,22,0.15); }
+}
+.step-item.done .step-circle {
+  background: var(--green); border-color: var(--green);
+  color: #fff;
+}
+.step-item.done .step-circle::after {
+  content: '✓'; font-size: 16px; font-weight: 900;
+}
+.step-item.done .step-num { display: none; }
+.step-label {
+  font-size: 13px; font-weight: 600; color: var(--text-muted);
+  transition: color .3s; white-space: nowrap;
+}
+.step-item.active .step-label { color: var(--text); }
+.step-item.done .step-label { color: var(--green); }
+.step-line {
+  width: 60px; height: 2px; background: var(--border);
+  margin: 0 8px; border-radius: 2px; position: relative; overflow: hidden;
+  flex-shrink: 0;
+}
+.step-line.filled {
+  background: var(--green);
+}
+.step-line.filling {
+  background: var(--border);
+}
+.step-line.filling::after {
+  content: ''; position: absolute; inset: 0;
+  background: var(--accent-gradient);
+  animation: lineFill .6s ease forwards;
+}
+@keyframes lineFill { from { width: 0; } to { width: 100%; } }
+
+/* ===== PANELS ===== */
+.panels-container {
+  position: relative; overflow: hidden;
+  min-height: 400px;
+}
+.panel {
+  display: none; opacity: 0;
+  animation: none;
+}
+.panel.active {
+  display: block;
+  animation: panelIn .4s ease forwards;
+}
+.panel.leaving {
+  animation: panelOut .3s ease forwards;
+}
+@keyframes panelIn {
+  from { opacity: 0; transform: translateX(30px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes panelOut {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(-30px); }
+}
+
+/* ===== SHARED ===== */
+.section-title {
+  font-size: 20px; font-weight: 700; margin-bottom: 6px;
+}
+.section-sub {
+  font-size: 14px; color: var(--text-secondary); margin-bottom: 20px;
+}
+.card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 20px;
+  transition: all .3s ease;
+}
+.card:hover { border-color: var(--glass-border); }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 12px 24px; border-radius: var(--radius);
+  font-family: inherit; font-size: 14px; font-weight: 600;
+  cursor: pointer; border: none; transition: all .15s ease;
+  text-decoration: none; white-space: nowrap;
+}
+.btn:active { transform: scale(0.97); }
+.btn-primary {
+  background: var(--accent-gradient); color: #fff;
+  box-shadow: 0 2px 12px var(--accent-glow);
+}
+.btn-primary:hover {
+  box-shadow: 0 4px 20px var(--accent-glow);
+  filter: brightness(1.1);
+}
+.btn-primary:disabled {
+  opacity: .5; cursor: not-allowed; filter: none;
+  box-shadow: none;
+}
+.btn-secondary {
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-secondary:hover { border-color: var(--text-muted); background: var(--card); }
+.btn-ghost {
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid transparent;
+}
+.btn-ghost:hover { color: var(--text); border-color: var(--border); }
+.btn-sm { padding: 8px 14px; font-size: 12px; border-radius: 8px; }
+
+/* Alerts */
+.alert {
+  display: flex; gap: 12px; padding: 14px 18px;
+  border-radius: var(--radius); font-size: 13px;
+  line-height: 1.5; margin-bottom: 20px;
+}
+.alert-info {
+  background: rgba(88,166,255,0.08); border: 1px solid rgba(88,166,255,0.2);
+  color: var(--blue);
+}
+.alert-warn {
+  background: rgba(249,115,22,0.08); border: 1px solid rgba(249,115,22,0.2);
+  color: var(--accent2);
+}
+.alert-success {
+  background: rgba(63,185,80,0.08); border: 1px solid rgba(63,185,80,0.2);
+  color: var(--green);
+}
+.alert-icon { font-size: 18px; flex-shrink: 0; line-height: 1; }
+
+/* Progress bar */
+.progress-wrap { margin: 20px 0; }
+.progress-info {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 8px; font-size: 13px;
+}
+.progress-label { color: var(--text-secondary); }
+.progress-pct { color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+.progress-bar-outer {
+  height: 8px; background: var(--surface);
+  border-radius: 8px; overflow: hidden; position: relative;
+}
+.progress-bar-inner {
+  height: 100%; border-radius: 8px;
+  background: var(--accent-gradient);
+  transition: width .3s ease;
+  position: relative;
+}
+.progress-bar-inner.active::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.25), transparent);
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.progress-detail {
+  display: flex; justify-content: space-between;
+  margin-top: 8px; font-size: 12px; color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== PANEL 1: UPLOAD ===== */
+.dropzone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-lg);
+  padding: 60px 30px; text-align: center;
+  cursor: pointer; transition: all .3s ease;
+  position: relative; overflow: hidden;
+  background: var(--surface);
+}
+.dropzone:hover, .dropzone.dragover {
+  border-color: var(--accent);
+  background: rgba(249,115,22,0.04);
+  transform: scale(1.01);
+}
+.dropzone.dragover {
+  box-shadow: inset 0 0 40px rgba(249,115,22,0.06);
+}
+.dropzone-ball {
+  font-size: 56px; display: block; margin-bottom: 16px;
+  animation: bounce 2s ease-in-out infinite;
+}
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-12px); }
+}
+.dropzone-title {
+  font-size: 18px; font-weight: 700; margin-bottom: 8px;
+}
+.dropzone-sub {
+  font-size: 13px; color: var(--text-secondary); margin-bottom: 6px;
+}
+.dropzone-tip {
+  font-size: 11px; color: var(--text-muted); margin-top: 12px;
+  font-style: italic;
+}
+.dropzone input[type=file] {
+  position: absolute; inset: 0; opacity: 0; cursor: pointer;
+}
+.file-info-card {
+  display: none; margin-top: 20px;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 20px;
+  animation: panelIn .3s ease;
+}
+.file-info-card.visible { display: block; }
+.file-info-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 0; font-size: 13px;
+}
+.file-info-label { color: var(--text-muted); }
+.file-info-value { color: var(--text); font-weight: 600; }
+.upload-progress { display: none; margin-top: 20px; }
+.upload-progress.visible { display: block; }
+
+/* ===== PANEL 3: ASSIGN ===== */
+.summary-bar {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px; margin-bottom: 24px;
+}
+.summary-stat {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 16px; text-align: center;
+}
+.summary-stat .val { font-size: 22px; font-weight: 800; color: var(--accent); }
+.summary-stat .lbl { font-size: 11px; color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: .5px; }
+.actions-bar {
+  display: flex; flex-wrap: wrap; gap: 10px;
+  margin-bottom: 20px;
+}
+.player-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px; margin-bottom: 28px;
+}
+.player-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); overflow: hidden;
+  transition: all .3s ease; position: relative;
+}
+.player-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 30px rgba(0,0,0,.3);
+  border-color: var(--glass-border);
+}
+.player-card.skipped {
+  opacity: .4; filter: grayscale(0.6);
+}
+.player-card.skipped:hover { transform: none; box-shadow: none; }
+.player-thumb-wrap {
+  position: relative; height: 120px; overflow: hidden;
+  background: var(--surface);
+}
+.player-thumb {
+  width: 100%; height: 100%; object-fit: cover;
+}
+.player-thumb-overlay {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  padding: 6px 10px;
+  background: linear-gradient(transparent, rgba(0,0,0,0.8));
+  display: flex; justify-content: space-between; align-items: flex-end;
+  font-size: 11px; font-weight: 600;
+}
+.player-tid { color: var(--accent); }
+.player-frames { color: var(--text-muted); }
+.player-fields { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.field-group { position: relative; }
+.field-group label {
+  display: block; font-size: 11px; color: var(--text-muted);
+  margin-bottom: 4px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .5px;
+}
+.field-group input, .field-group select {
+  width: 100%; padding: 9px 12px; font-size: 13px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text);
+  font-family: inherit; outline: none;
+  transition: border-color .2s;
+}
+.field-group input:focus, .field-group select:focus {
+  border-color: var(--accent);
+}
+.field-group select option { background: var(--card); }
+.field-row { display: flex; gap: 10px; align-items: flex-end; }
+.field-row .field-group { flex: 1; }
+.color-input-wrap { width: 44px; flex-shrink: 0; }
+.color-input-wrap input[type=color] {
+  width: 44px; height: 36px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--surface);
+  cursor: pointer; padding: 2px;
+}
+.skip-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding-top: 4px;
+}
+.skip-row span { font-size: 12px; color: var(--text-muted); }
+.toggle {
+  position: relative; width: 36px; height: 20px;
+  background: var(--surface); border-radius: 20px;
+  cursor: pointer; transition: background .2s;
+  border: 1px solid var(--border);
+}
+.toggle.on { background: var(--accent); border-color: var(--accent); }
+.toggle::after {
+  content: ''; position: absolute;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; top: 2px; left: 2px;
+  transition: transform .2s;
+}
+.toggle.on::after { transform: translateX(16px); }
+
+/* ===== PANEL 4: RESULTS ===== */
+.team-score-bar {
+  display: flex; align-items: stretch; gap: 0;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); overflow: hidden;
+  margin-bottom: 28px; min-height: 80px;
+}
+.team-score-side {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  gap: 12px; padding: 20px; position: relative;
+  transition: flex .5s ease;
+}
+.team-score-side.winner { flex: 1.15; }
+.team-score-side.winner::before {
+  content: ''; position: absolute; inset: 0;
+  opacity: 0.08;
+}
+.team-a-side { background: linear-gradient(135deg, rgba(88,166,255,0.12), transparent); }
+.team-b-side { background: linear-gradient(135deg, transparent, rgba(248,81,73,0.12)); }
+.team-a-side.winner { background: linear-gradient(135deg, rgba(88,166,255,0.2), rgba(88,166,255,0.05)); }
+.team-b-side.winner { background: linear-gradient(135deg, rgba(248,81,73,0.05), rgba(248,81,73,0.2)); }
+.team-name { font-size: 16px; font-weight: 700; }
+.team-a-side .team-name { color: var(--team-a); }
+.team-b-side .team-name { color: var(--team-b); }
+.team-pts { font-size: 36px; font-weight: 900; }
+.team-a-side .team-pts { color: var(--team-a); }
+.team-b-side .team-pts { color: var(--team-b); }
+.team-divider {
+  width: 2px; background: var(--border); position: relative;
+  display: flex; align-items: center; justify-content: center;
+}
+.team-divider span {
+  position: absolute; background: var(--card);
+  padding: 4px 6px; font-size: 11px; font-weight: 700;
+  color: var(--text-muted); letter-spacing: 1px;
+}
+
+/* Summary Cards */
+.summary-cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 14px; margin-bottom: 32px;
+}
+.sum-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px;
+  text-align: center;
+  backdrop-filter: blur(10px);
+  transition: all .3s;
+}
+.sum-card:hover { border-color: var(--glass-border); transform: translateY(-2px); }
+.sum-card .icon { font-size: 24px; margin-bottom: 8px; }
+.sum-card .label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+.sum-card .value { font-size: 28px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+.sum-card .sub { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+
+/* Box Score Table */
+.table-wrap {
+  overflow-x: auto; border-radius: var(--radius-lg);
+  border: 1px solid var(--border); margin-bottom: 28px;
+  -webkit-overflow-scrolling: touch;
+}
+.box-table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+  min-width: 900px;
+}
+.box-table th {
+  background: var(--surface); color: var(--text-muted);
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .5px; padding: 10px 12px; text-align: right;
+  cursor: pointer; user-select: none; white-space: nowrap;
+  position: sticky; top: 0; z-index: 2;
+  border-bottom: 1px solid var(--border);
+  transition: color .2s;
+}
+.box-table th:hover { color: var(--text); }
+.box-table th:first-child { text-align: left; position: sticky; left: 0; z-index: 3; background: var(--surface); }
+.box-table th.sorted { color: var(--accent); }
+.box-table th .sort-arrow { font-size: 9px; margin-left: 3px; }
+.box-table td {
+  padding: 10px 12px; text-align: right; border-bottom: 1px solid rgba(48,54,61,0.4);
+  font-variant-numeric: tabular-nums; color: var(--text-secondary);
+  white-space: nowrap;
+}
+.box-table td:first-child {
+  text-align: left; color: var(--text); font-weight: 600;
+  position: sticky; left: 0; background: var(--card); z-index: 1;
+}
+.box-table tbody tr { background: var(--card); transition: background .15s; }
+.box-table tbody tr:nth-child(even) td { background: rgba(22,27,34,0.4); }
+.box-table tbody tr:nth-child(even) td:first-child { background: rgba(22,27,34,0.9); }
+.box-table tbody tr:hover td { background: var(--card-hover); }
+.box-table tbody tr:hover td:first-child { background: var(--card-hover); }
+.box-table td.leader { color: var(--gold); font-weight: 700; }
+.team-header-row td {
+  background: var(--surface) !important;
+  font-weight: 700; font-size: 12px;
+  text-transform: uppercase; letter-spacing: .5px;
+  padding: 8px 12px; text-align: left !important;
+  color: var(--text-muted) !important;
+  border-bottom: 2px solid var(--border);
+}
+.team-header-row.team-a td { border-left: 3px solid var(--team-a); }
+.team-header-row.team-b td { border-left: 3px solid var(--team-b); }
+.player-name-cell { display: flex; align-items: center; gap: 8px; }
+.player-color-dot {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  border: 1px solid rgba(255,255,255,0.15);
+}
+
+/* Video Player */
+.video-section { margin-bottom: 28px; }
+.video-section h3 { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+.video-container {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); overflow: hidden;
+}
+.video-container video { width: 100%; display: block; }
+
+/* Export Row */
+.export-row {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  margin-bottom: 28px;
+}
+
+/* Accuracy Disclaimer */
+.disclaimer {
+  background: rgba(249,115,22,0.06); border: 1px solid rgba(249,115,22,0.15);
+  border-radius: var(--radius); padding: 16px 20px;
+  font-size: 13px; color: var(--text-secondary);
+  line-height: 1.6; display: flex; gap: 12px;
+}
+.disclaimer-icon { font-size: 24px; flex-shrink: 0; }
+
+/* ===== TOAST ===== */
+.toast-container {
+  position: fixed; bottom: 24px; right: 24px; z-index: 9999;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.toast {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 20px;
+  font-size: 13px; color: var(--text); box-shadow: var(--shadow);
+  display: flex; align-items: center; gap: 10px; min-width: 280px;
+  animation: toastIn .3s ease;
+}
+.toast.out { animation: toastOut .3s ease forwards; }
+.toast-success { border-left: 3px solid var(--green); }
+.toast-error { border-left: 3px solid var(--red); }
+.toast-info { border-left: 3px solid var(--blue); }
+@keyframes toastIn { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: none; } }
+@keyframes toastOut { to { opacity: 0; transform: translateX(40px); } }
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 1023px) {
+  .player-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+  .summary-cards { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 767px) {
+  .header { padding: 0 14px; }
+  .logo-sub { display: none; }
+  .container { padding: 16px 12px 60px; }
+  .step-label { display: none; }
+  .step-line { width: 30px; }
+  .step-circle { width: 34px; height: 34px; font-size: 13px; }
+  .player-grid { grid-template-columns: 1fr; }
+  .summary-cards { grid-template-columns: repeat(2, 1fr); }
+  .sum-card .value { font-size: 22px; }
+  .box-table { font-size: 12px; }
+  .team-score-bar { flex-direction: column; }
+  .team-divider { width: auto; height: 2px; }
+  .team-divider span { padding: 2px 8px; }
+  .team-pts { font-size: 28px; }
+  .dropzone { padding: 40px 20px; }
+  .dropzone-ball { font-size: 44px; }
+}
+
+/* Row stagger animation */
+@keyframes rowFadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.stagger-row {
+  animation: rowFadeIn .3s ease both;
+}
+
+/* Count-up done highlight */
+.counted { transition: color .3s; }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="header">
+  <div class="header-left">
+    <span class="logo-ball">🏀</span>
+    <div>
+      <span class="logo-text">PickupStats</span>
+      <span class="logo-sub">Analizador de Basketball · 100% local</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="health-wrap" id="healthWrap">
+      <span class="health-dot" id="healthDot"></span>
+      <span class="health-label" id="healthLabel">Conectando…</span>
+      <div class="health-tooltip" id="healthTooltip">
+        <p>Cargando información…</p>
+      </div>
+    </div>
+    <span class="version-badge">v2.0</span>
+  </div>
+</header>
+
+<!-- MAIN -->
+<main class="container">
+
+  <!-- STEPPER -->
+  <nav class="stepper" id="stepper">
+    <div class="step-item active" data-step="1">
+      <div class="step-circle"><span class="step-num">1</span></div>
+      <span class="step-label">Subir Video</span>
+    </div>
+    <div class="step-line" id="line-1-2"></div>
+    <div class="step-item" data-step="2">
+      <div class="step-circle"><span class="step-num">2</span></div>
+      <span class="step-label">Detectar</span>
+    </div>
+    <div class="step-line" id="line-2-3"></div>
+    <div class="step-item" data-step="3">
+      <div class="step-circle"><span class="step-num">3</span></div>
+      <span class="step-label">Identificar</span>
+    </div>
+    <div class="step-line" id="line-3-4"></div>
+    <div class="step-item" data-step="4">
+      <div class="step-circle"><span class="step-num">4</span></div>
+      <span class="step-label">Estadísticas</span>
+    </div>
+  </nav>
+
+  <!-- PANELS -->
+  <div class="panels-container">
+
+    <!-- PANEL 1: UPLOAD -->
+    <section class="panel active" id="panel-1">
+      <h2 class="section-title">Subir Video del Partido</h2>
+      <p class="section-sub">Subí el video de tu partido de pickup para analizar las estadísticas con inteligencia artificial.</p>
+
+      <div class="dropzone" id="dropzone">
+        <span class="dropzone-ball">🏀</span>
+        <p class="dropzone-title">Arrastrá o hacé click para subir el video</p>
+        <p class="dropzone-sub">MP4, MOV, AVI, MKV · Máximo recomendado: 500MB</p>
+        <p class="dropzone-tip">💡 El video debe estar grabado desde el piso mirando de frente al aro</p>
+        <input type="file" id="fileInput" accept=".mp4,.mov,.avi,.mkv,video/*">
+      </div>
+
+      <div class="file-info-card" id="fileInfoCard">
+        <div class="file-info-row">
+          <span class="file-info-label">📁 Archivo</span>
+          <span class="file-info-value" id="fileName">—</span>
+        </div>
+        <div class="file-info-row">
+          <span class="file-info-label">💾 Tamaño</span>
+          <span class="file-info-value" id="fileSize">—</span>
+        </div>
+        <div class="file-info-row">
+          <span class="file-info-label">🎬 Tipo</span>
+          <span class="file-info-value" id="fileType">—</span>
+        </div>
+      </div>
+
+      <div class="upload-progress" id="uploadProgress">
+        <div class="progress-wrap">
+          <div class="progress-info">
+            <span class="progress-label" id="uploadStage">Subiendo video…</span>
+            <span class="progress-pct" id="uploadPct">0%</span>
+          </div>
+          <div class="progress-bar-outer">
+            <div class="progress-bar-inner active" id="uploadBar" style="width:0%"></div>
+          </div>
+          <div class="progress-detail">
+            <span id="uploadSent">0 MB / 0 MB</span>
+            <span id="uploadSpeed"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PANEL 2: DETECT -->
+    <section class="panel" id="panel-2">
+      <h2 class="section-title">Detección de Jugadores y Pelota</h2>
+      <p class="section-sub">El modelo YOLOv8 analizará cada frame del video para detectar jugadores, la pelota y el aro.</p>
+
+      <div class="alert alert-info">
+        <span class="alert-icon">💡</span>
+        <span>La detección puede tardar varios minutos según la duración del video y tu hardware. No cierres esta pestaña.</span>
+      </div>
+
+      <div class="card" id="detectMeta" style="margin-bottom:20px">
+        <div class="file-info-row">
+          <span class="file-info-label">📁 Archivo</span>
+          <span class="file-info-value" id="detectFileName">—</span>
+        </div>
+        <div class="file-info-row">
+          <span class="file-info-label">🆔 Job ID</span>
+          <span class="file-info-value" id="detectJobId">—</span>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" id="btnDetect" onclick="startDetection()">
+        🔍 Iniciar Detección con YOLOv8
+      </button>
+
+      <div id="detectProgressWrap" style="display:none; margin-top:20px;">
+        <div class="progress-wrap">
+          <div class="progress-info">
+            <span class="progress-label" id="detectStage">Iniciando…</span>
+            <span class="progress-pct" id="detectPct">0%</span>
+          </div>
+          <div class="progress-bar-outer">
+            <div class="progress-bar-inner active" id="detectBar" style="width:0%"></div>
+          </div>
+          <div class="progress-detail">
+            <span id="detectFrames">Frame 0 / —</span>
+            <span id="detectEta">ETA: calculando…</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PANEL 3: ASSIGN -->
+    <section class="panel" id="panel-3">
+      <h2 class="section-title">Identificar Jugadores</h2>
+      <p class="section-sub">Asigná nombre, equipo y color a cada jugador detectado. Podés omitir personas que no sean jugadores.</p>
+
+      <div class="summary-bar" id="assignSummary"></div>
+
+      <div class="actions-bar">
+        <button class="btn btn-secondary btn-sm" onclick="quickNames()">⚡ Nombres rápidos</button>
+        <button class="btn btn-secondary btn-sm" onclick="allTeam('A')">🔵 Todo Equipo A</button>
+        <button class="btn btn-secondary btn-sm" onclick="allTeam('B')">🔴 Todo Equipo B</button>
+      </div>
+
+      <div class="player-grid" id="playerGrid"></div>
+
+      <button class="btn btn-primary" id="btnAnalyze" onclick="assignAndAnalyze()">
+        📊 Analizar y Generar Estadísticas
+      </button>
+
+      <div id="analyzeProgressWrap" style="display:none; margin-top:20px;">
+        <div class="progress-wrap">
+          <div class="progress-info">
+            <span class="progress-label" id="analyzeStage">Iniciando análisis…</span>
+            <span class="progress-pct" id="analyzePct">0%</span>
+          </div>
+          <div class="progress-bar-outer">
+            <div class="progress-bar-inner active" id="analyzeBar" style="width:0%"></div>
+          </div>
+          <div class="progress-detail">
+            <span id="analyzeDetail"></span>
+            <span id="analyzeEta">ETA: calculando…</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PANEL 4: RESULTS -->
+    <section class="panel" id="panel-4">
+      <h2 class="section-title">📊 Estadísticas del Partido</h2>
+      <p class="section-sub">Resultados generados automáticamente con visión artificial.</p>
+
+      <!-- Team Score Bar -->
+      <div class="team-score-bar" id="teamScoreBar"></div>
+
+      <!-- Summary Cards -->
+      <div class="summary-cards" id="summaryCards"></div>
+
+      <!-- Box Score Table -->
+      <h3 style="font-size:16px;font-weight:700;margin-bottom:12px;">📋 Box Score Completo</h3>
+      <div class="table-wrap" id="tableWrap">
+        <table class="box-table" id="boxTable">
+          <thead id="boxHead"></thead>
+          <tbody id="boxBody"></tbody>
+        </table>
+      </div>
+
+      <!-- Video -->
+      <div class="video-section" id="videoSection" style="display:none">
+        <h3>🎥 Video Anotado</h3>
+        <div class="video-container">
+          <video id="annotatedVideo" controls></video>
+        </div>
+      </div>
+
+      <!-- Export -->
+      <div class="export-row">
+        <button class="btn btn-secondary" onclick="downloadCSV()">⬇️ Exportar CSV</button>
+        <button class="btn btn-secondary" onclick="downloadPDF()">📄 Exportar PDF</button>
+        <button class="btn btn-ghost" onclick="resetAll()">🔄 Nuevo Análisis</button>
+      </div>
+
+      <!-- Disclaimer -->
+      <div class="disclaimer">
+        <span class="disclaimer-icon">🏀</span>
+        <div>
+          <strong>Aviso sobre precisión:</strong> Las estadísticas se generan mediante modelos de visión artificial
+          y son estimaciones basadas en el video. La precisión depende de la calidad del video, ángulo de cámara y
+          condiciones de grabación. No deben considerarse como datos oficiales.
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<!-- TOASTS -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+/* ======================================================================
+   STATE
+   ====================================================================== */
+let jobId = null;
+let uploadedFilename = null;
+let detectionResult = null;
+let statsData = null;
+let annotatedVideoUrl = null;
+let currentStep = 1;
+let eventSource = null;
+let sortColumn = null;
+let sortDirection = 'desc';
+const STAT_COLS = ['MIN','PTS','REB','AST','FGM','FGA','FG_PCT','3PM','3PA','3P_PCT','FTM','FTA','FT_PCT','OREB','DREB','STL','BLK','TO','PLUS_MINUS'];
+const COL_LABELS = {MIN:'MIN',PTS:'PTS',REB:'REB',AST:'AST',FGM:'FGM',FGA:'FGA',FG_PCT:'FG%','3PM':'3PM','3PA':'3PA','3P_PCT':'3P%',FTM:'FTM',FTA:'FTA',FT_PCT:'FT%',OREB:'OREB',DREB:'DREB',STL:'STL',BLK:'BLK',TO:'TO',PLUS_MINUS:'+/-'};
+const VALID_EXTENSIONS = ['mp4','mov','avi','mkv'];
+
+/* ======================================================================
+   UTILITIES
+   ====================================================================== */
+function formatBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+  if (b < 1073741824) return (b/1048576).toFixed(1) + ' MB';
+  return (b/1073741824).toFixed(2) + ' GB';
+}
+function formatNumber(n) {
+  if (n == null) return '—';
+  return Number(n).toLocaleString('es-AR');
+}
+function formatPct(n) {
+  if (n == null) return '—';
+  return (Number(n)*100).toFixed(1) + '%';
+}
+function formatStat(col, v) {
+  if (v == null) return '—';
+  if (col.endsWith('_PCT')) return typeof v === 'number' ? (v > 1 ? v.toFixed(1)+'%' : (v*100).toFixed(1)+'%') : v;
+  if (col === 'PLUS_MINUS') { const n = Number(v); return n > 0 ? '+'+n : String(n); }
+  return typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(1)) : v;
+}
+function calculateETA(startMs, pct) {
+  if (!pct || pct <= 0) return 'ETA: calculando…';
+  const elapsed = (Date.now() - startMs) / 1000;
+  const total = elapsed / (pct / 100);
+  const remain = Math.max(0, total - elapsed);
+  if (remain < 60) return `ETA: ${Math.round(remain)}s`;
+  if (remain < 3600) return `ETA: ${Math.floor(remain/60)}m ${Math.round(remain%60)}s`;
+  return `ETA: ${Math.floor(remain/3600)}h ${Math.floor((remain%3600)/60)}m`;
+}
+
+/* ======================================================================
+   TOASTS
+   ====================================================================== */
+function showToast(msg, type = 'info') {
+  const c = document.getElementById('toastContainer');
+  const t = document.createElement('div');
+  t.className = `toast toast-${type}`;
+  const icons = { success: '✅', error: '❌', info: 'ℹ️' };
+  t.innerHTML = `<span>${icons[type]||'ℹ️'}</span><span>${msg}</span>`;
+  c.appendChild(t);
+  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 300); }, 4500);
+}
+
+/* ======================================================================
+   HEALTH CHECK
+   ====================================================================== */
+async function checkHealth() {
+  try {
+    const r = await fetch('/health');
+    const d = await r.json();
+    const dot = document.getElementById('healthDot');
+    const lbl = document.getElementById('healthLabel');
+    const tip = document.getElementById('healthTooltip');
+    dot.className = 'health-dot ok';
+    lbl.textContent = 'En línea';
+    tip.innerHTML = `
+      <p><strong>Modelo:</strong> ${d.model || 'YOLOv8'}</p>
+      <p><strong>GPU:</strong> ${d.gpu || 'N/A'}</p>
+      <p><strong>FFmpeg:</strong> ${d.ffmpeg ? '✅ Disponible' : '❌ No encontrado'}</p>
+      <p><strong>Trabajos:</strong> ${d.jobs_count ?? 0}</p>
+    `;
+  } catch {
+    document.getElementById('healthDot').className = 'health-dot err';
+    document.getElementById('healthLabel').textContent = 'Sin conexión';
+    document.getElementById('healthTooltip').innerHTML = '<p>No se pudo conectar al servidor.</p>';
+  }
+}
+checkHealth();
+
+/* ======================================================================
+   STEPPER
+   ====================================================================== */
+function goToStep(n) {
+  if (n === currentStep) return;
+  const oldPanel = document.getElementById(`panel-${currentStep}`);
+  const newPanel = document.getElementById(`panel-${n}`);
+  // Animate out old panel
+  oldPanel.classList.remove('active');
+  oldPanel.classList.add('leaving');
+  setTimeout(() => { oldPanel.classList.remove('leaving'); }, 300);
+  // Animate in new panel
+  setTimeout(() => {
+    newPanel.classList.add('active');
+  }, 150);
+  // Update stepper
+  document.querySelectorAll('.step-item').forEach(s => {
+    const sn = parseInt(s.dataset.step);
+    s.classList.remove('active', 'done');
+    if (sn < n) s.classList.add('done');
+    else if (sn === n) s.classList.add('active');
+  });
+  // Lines
+  for (let i = 1; i <= 3; i++) {
+    const line = document.getElementById(`line-${i}-${i+1}`);
+    line.classList.remove('filled', 'filling');
+    if (i < n) line.classList.add('filled');
+    else if (i === n - 1) line.classList.add('filling');
+  }
+  currentStep = n;
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+/* ======================================================================
+   PANEL 1: UPLOAD
+   ====================================================================== */
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault(); dropzone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
+
+function handleFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!VALID_EXTENSIONS.includes(ext)) {
+    showToast(`Formato no válido (.${ext}). Usá MP4, MOV, AVI o MKV.`, 'error');
+    return;
+  }
+  document.getElementById('fileName').textContent = file.name;
+  document.getElementById('fileSize').textContent = formatBytes(file.size);
+  document.getElementById('fileType').textContent = file.type || ext.toUpperCase();
+  document.getElementById('fileInfoCard').classList.add('visible');
+  uploadFile(file);
+}
+
+function uploadFile(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  const xhr = new XMLHttpRequest();
+  const progWrap = document.getElementById('uploadProgress');
+  const bar = document.getElementById('uploadBar');
+  const pct = document.getElementById('uploadPct');
+  const sent = document.getElementById('uploadSent');
+  const speed = document.getElementById('uploadSpeed');
+  const stage = document.getElementById('uploadStage');
+  progWrap.classList.add('visible');
+  const startTime = Date.now();
+  xhr.upload.addEventListener('progress', e => {
+    if (e.lengthComputable) {
+      const p = Math.round((e.loaded / e.total) * 100);
+      bar.style.width = p + '%';
+      pct.textContent = p + '%';
+      sent.textContent = `${formatBytes(e.loaded)} / ${formatBytes(e.total)}`;
+      const elapsed = (Date.now() - startTime) / 1000;
+      if (elapsed > 0.5) {
+        const bps = e.loaded / elapsed;
+        speed.textContent = formatBytes(bps) + '/s';
+      }
+    }
+  });
+  xhr.addEventListener('load', () => {
+    if (xhr.status >= 200 && xhr.status < 300) {
+      try {
+        const data = JSON.parse(xhr.responseText);
+        jobId = data.job_id;
+        uploadedFilename = data.filename || file.name;
+        stage.textContent = '¡Subido con éxito!';
+        bar.classList.remove('active');
+        showToast('Video subido correctamente.', 'success');
+        // Setup detect panel
+        document.getElementById('detectFileName').textContent = uploadedFilename;
+        document.getElementById('detectJobId').textContent = jobId;
+        setTimeout(() => goToStep(2), 600);
+      } catch {
+        showToast('Respuesta inválida del servidor.', 'error');
+      }
+    } else {
+      showToast(`Error al subir (HTTP ${xhr.status}).`, 'error');
+      stage.textContent = 'Error en la subida';
+      bar.classList.remove('active');
+    }
+  });
+  xhr.addEventListener('error', () => {
+    showToast('Error de red al subir el archivo.', 'error');
+    stage.textContent = 'Error de conexión';
+    bar.classList.remove('active');
+  });
+  xhr.open('POST', '/upload');
+  xhr.send(fd);
+}
+
+/* ======================================================================
+   SSE LISTENER
+   ====================================================================== */
+function listenSSE(jid, onMessage, onDone, onError) {
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  let retries = 0;
+  const maxRetries = 5;
+
+  function connect() {
+    eventSource = new EventSource(`/progress/${jid}`);
+    eventSource.onmessage = e => {
+      retries = 0;
+      try {
+        const d = JSON.parse(e.data);
+        onMessage(d);
+        if (d.status === 'detected' || d.status === 'done' || d.status === 'completed') {
+          eventSource.close(); eventSource = null;
+          onDone(d);
+        }
+        if (d.status === 'error') {
+          eventSource.close(); eventSource = null;
+          onError(d.detail || 'Error desconocido');
+        }
+      } catch (err) { console.warn('SSE parse error', err); }
+    };
+    eventSource.onerror = () => {
+      eventSource.close(); eventSource = null;
+      retries++;
+      if (retries <= maxRetries) {
+        showToast(`Reconectando SSE (${retries}/${maxRetries})…`, 'info');
+        setTimeout(connect, 2000);
+      } else {
+        onError('Se perdió la conexión con el servidor.');
+      }
+    };
+  }
+  connect();
+}
+
+/* ======================================================================
+   PANEL 2: DETECT
+   ====================================================================== */
+function startDetection() {
+  const btn = document.getElementById('btnDetect');
+  btn.disabled = true;
+  btn.textContent = '⏳ Detectando…';
+  document.getElementById('detectProgressWrap').style.display = 'block';
+  const startMs = Date.now();
+
+  fetch(`/detect/${jobId}`, { method: 'POST' })
+    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+    .then(() => {
+      listenSSE(jobId,
+        d => {
+          const p = d.progress || 0;
+          document.getElementById('detectBar').style.width = p + '%';
+          document.getElementById('detectPct').textContent = Math.round(p) + '%';
+          document.getElementById('detectStage').textContent = d.stage || d.detail || 'Procesando…';
+          if (d.detail) {
+            const m = d.detail.match(/(\d[\d,]*)\s*\/\s*(\d[\d,]*)/);
+            if (m) document.getElementById('detectFrames').textContent = `Frame ${m[1]} / ${m[2]}`;
+          }
+          document.getElementById('detectEta').textContent = calculateETA(startMs, p);
+        },
+        () => {
+          showToast('¡Detección completa!', 'success');
+          fetchDetectionAndProceed();
+        },
+        err => {
+          showToast('Error en detección: ' + err, 'error');
+          btn.disabled = false;
+          btn.textContent = '🔍 Reintentar Detección';
+        }
+      );
+    })
+    .catch(err => {
+      showToast('No se pudo iniciar la detección: ' + err.message, 'error');
+      btn.disabled = false;
+      btn.textContent = '🔍 Reintentar Detección';
+    });
+}
+
+async function fetchDetectionAndProceed() {
+  try {
+    const r = await fetch(`/status/${jobId}`);
+    const d = await r.json();
+    detectionResult = d.detection_result;
+    if (!detectionResult) throw new Error('No detection_result');
+    buildPlayerGrid(detectionResult);
+    goToStep(3);
+  } catch (err) {
+    showToast('Error al obtener resultados de detección: ' + err.message, 'error');
+  }
+}
+
+/* ======================================================================
+   PANEL 3: ASSIGN PLAYERS
+   ====================================================================== */
+function buildPlayerGrid(dr) {
+  // Summary bar
+  const sb = document.getElementById('assignSummary');
+  sb.innerHTML = `
+    <div class="summary-stat"><div class="val">${dr.track_ids ? dr.track_ids.length : Object.keys(dr.tracks).length}</div><div class="lbl">Jugadores</div></div>
+    <div class="summary-stat"><div class="val">${formatNumber(dr.ball_detections)}</div><div class="lbl">Det. Pelota</div></div>
+    <div class="summary-stat"><div class="val">${formatNumber(dr.total_frames)}</div><div class="lbl">Frames</div></div>
+    <div class="summary-stat"><div class="val">${dr.resolution || '—'}</div><div class="lbl">Resolución</div></div>
+  `;
+  // Player cards
+  const grid = document.getElementById('playerGrid');
+  grid.innerHTML = '';
+  const ids = dr.track_ids || Object.keys(dr.tracks).map(Number).sort((a,b)=>a-b);
+  const teamColors = ['#58a6ff','#f85149','#3fb950','#bc8cff','#f0c000','#fb923c','#ff6bcb','#0ef','#99f','#ff9'];
+  ids.forEach((tid, i) => {
+    const t = dr.tracks[String(tid)] || {};
+    const thumb = t.thumbnail || '';
+    const frames = t.frame_count || 0;
+    const color = teamColors[i % teamColors.length];
+    const card = document.createElement('div');
+    card.className = 'player-card';
+    card.dataset.tid = tid;
+    card.innerHTML = `
+      <div class="player-thumb-wrap">
+        ${thumb ? `<img class="player-thumb" src="${thumb}" alt="Jugador ${tid}" loading="lazy">` : `<div class="player-thumb" style="display:flex;align-items:center;justify-content:center;font-size:36px;color:var(--text-muted)">👤</div>`}
+        <div class="player-thumb-overlay">
+          <span class="player-tid">ID #${tid}</span>
+          <span class="player-frames">${formatNumber(frames)} frames</span>
+        </div>
+      </div>
+      <div class="player-fields">
+        <div class="field-group">
+          <label>Nombre</label>
+          <input type="text" class="p-name" placeholder="Nombre del jugador" value="">
+        </div>
+        <div class="field-row">
+          <div class="field-group">
+            <label>Equipo</label>
+            <select class="p-team">
+              <option value="A">🔵 Equipo A</option>
+              <option value="B">🔴 Equipo B</option>
+            </select>
+          </div>
+          <div class="field-group color-input-wrap">
+            <label>Color</label>
+            <input type="color" class="p-color" value="${color}">
+          </div>
+        </div>
+        <div class="skip-row">
+          <span>Omitir jugador</span>
+          <div class="toggle p-skip" onclick="toggleSkip(this)"></div>
+        </div>
+      </div>
+    `;
+    // Alternate default teams
+    if (i % 2 === 1) card.querySelector('.p-team').value = 'B';
+    grid.appendChild(card);
+  });
+}
+
+function toggleSkip(el) {
+  el.classList.toggle('on');
+  const card = el.closest('.player-card');
+  card.classList.toggle('skipped', el.classList.contains('on'));
+}
+
+function quickNames() {
+  document.querySelectorAll('.player-card').forEach((c, i) => {
+    const inp = c.querySelector('.p-name');
+    if (!inp.value) inp.value = `Jugador ${i + 1}`;
+  });
+  showToast('Nombres asignados automáticamente.', 'success');
+}
+
+function allTeam(t) {
+  document.querySelectorAll('.player-card').forEach(c => {
+    c.querySelector('.p-team').value = t;
+  });
+  showToast(`Todos asignados a Equipo ${t}.`, 'info');
+}
+
+/* ======================================================================
+   PANEL 3→4: ANALYZE
+   ====================================================================== */
+async function assignAndAnalyze() {
+  const cards = document.querySelectorAll('.player-card');
+  const players = {};
+  let hasPlayers = false;
+  cards.forEach(c => {
+    const skipped = c.querySelector('.p-skip').classList.contains('on');
+    if (skipped) return;
+    const tid = c.dataset.tid;
+    const name = c.querySelector('.p-name').value.trim() || `Jugador ${tid}`;
+    const team = c.querySelector('.p-team').value;
+    const color = c.querySelector('.p-color').value;
+    players[tid] = { name, team, color };
+    hasPlayers = true;
+  });
+  if (!hasPlayers) {
+    showToast('Necesitás al menos un jugador activo.', 'error');
+    return;
+  }
+  const btn = document.getElementById('btnAnalyze');
+  btn.disabled = true;
+  btn.textContent = '⏳ Procesando…';
+
+  try {
+    // Assign players
+    const ar = await fetch(`/assign_players/${jobId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ players })
+    });
+    if (!ar.ok) throw new Error(`Assign HTTP ${ar.status}`);
+
+    // Start analysis
+    const anr = await fetch(`/analyze/${jobId}`, { method: 'POST' });
+    if (!anr.ok) throw new Error(`Analyze HTTP ${anr.status}`);
+
+    document.getElementById('analyzeProgressWrap').style.display = 'block';
+    const startMs = Date.now();
+
+    listenSSE(jobId,
+      d => {
+        const p = d.progress || 0;
+        document.getElementById('analyzeBar').style.width = p + '%';
+        document.getElementById('analyzePct').textContent = Math.round(p) + '%';
+        const stageMap = {
+          analyzing: 'Calculando estadísticas…',
+          annotating: 'Generando video anotado…',
+          merging_audio: 'Fusionando audio…',
+        };
+        document.getElementById('analyzeStage').textContent = stageMap[d.stage] || d.stage || d.detail || 'Procesando…';
+        document.getElementById('analyzeDetail').textContent = d.detail || '';
+        document.getElementById('analyzeEta').textContent = calculateETA(startMs, p);
+      },
+      () => {
+        showToast('¡Análisis completo!', 'success');
+        fetchStatsAndShow();
+      },
+      err => {
+        showToast('Error en análisis: ' + err, 'error');
+        btn.disabled = false;
+        btn.textContent = '📊 Reintentar Análisis';
+      }
+    );
+  } catch (err) {
+    showToast('Error: ' + err.message, 'error');
+    btn.disabled = false;
+    btn.textContent = '📊 Reintentar Análisis';
+  }
+}
+
+async function fetchStatsAndShow() {
+  try {
+    const r = await fetch(`/status/${jobId}`);
+    const d = await r.json();
+    statsData = d.stats;
+    annotatedVideoUrl = d.annotated_video || null;
+    if (!statsData) throw new Error('No stats');
+    buildStatsPanel(statsData);
+    goToStep(4);
+  } catch (err) {
+    showToast('Error al obtener estadísticas: ' + err.message, 'error');
+  }
+}
+
+/* ======================================================================
+   PANEL 4: RESULTS
+   ====================================================================== */
+function buildStatsPanel(stats) {
+  const players = Object.entries(stats).map(([id, s]) => ({ id, ...s }));
+  const teamA = players.filter(p => p.team === 'A');
+  const teamB = players.filter(p => p.team === 'B');
+  const ptsA = teamA.reduce((s, p) => s + (p.PTS || 0), 0);
+  const ptsB = teamB.reduce((s, p) => s + (p.PTS || 0), 0);
+  const totalPts = ptsA + ptsB;
+
+  // Team Score Bar
+  const tsb = document.getElementById('teamScoreBar');
+  const winA = ptsA >= ptsB;
+  tsb.innerHTML = `
+    <div class="team-score-side team-a-side ${winA ? 'winner' : ''}">
+      <span class="team-name">Equipo A</span>
+      <span class="team-pts" data-count="${ptsA}">0</span>
+    </div>
+    <div class="team-divider"><span>VS</span></div>
+    <div class="team-score-side team-b-side ${!winA ? 'winner' : ''}">
+      <span class="team-name">Equipo B</span>
+      <span class="team-pts" data-count="${ptsB}">0</span>
+    </div>
+  `;
+
+  // Top players
+  const topScorer = players.reduce((a, b) => (b.PTS || 0) > (a.PTS || 0) ? b : a, players[0]);
+  const topReb = players.reduce((a, b) => (b.REB || 0) > (a.REB || 0) ? b : a, players[0]);
+  const topAst = players.reduce((a, b) => (b.AST || 0) > (a.AST || 0) ? b : a, players[0]);
+  const totalMin = Math.max(...players.map(p => p.MIN || 0));
+
+  // Summary Cards
+  const sc = document.getElementById('summaryCards');
+  sc.innerHTML = `
+    <div class="sum-card"><div class="icon">⏱️</div><div class="label">Duración</div><div class="value" data-count="${Math.round(totalMin)}">${Math.round(totalMin)}</div><div class="sub">minutos</div></div>
+    <div class="sum-card"><div class="icon">🏀</div><div class="label">Puntos Totales</div><div class="value" data-count="${totalPts}">0</div><div class="sub">entre ambos equipos</div></div>
+    <div class="sum-card"><div class="icon">🔥</div><div class="label">Top Scorer</div><div class="value" data-count="${topScorer.PTS||0}">0</div><div class="sub">${topScorer.name}</div></div>
+    <div class="sum-card"><div class="icon">💪</div><div class="label">Top Rebotero</div><div class="value" data-count="${topReb.REB||0}">0</div><div class="sub">${topReb.name}</div></div>
+    <div class="sum-card"><div class="icon">🎯</div><div class="label">Top Asistidor</div><div class="value" data-count="${topAst.AST||0}">0</div><div class="sub">${topAst.name}</div></div>
+    <div class="sum-card"><div class="icon">👥</div><div class="label">Jugadores</div><div class="value" data-count="${players.length}">0</div><div class="sub">${teamA.length}A + ${teamB.length}B</div></div>
+  `;
+
+  // Box Score Table
+  buildBoxTable(players);
+
+  // Video
+  if (annotatedVideoUrl) {
+    document.getElementById('videoSection').style.display = 'block';
+    document.getElementById('annotatedVideo').src = annotatedVideoUrl;
+  }
+
+  // Animate counts
+  requestAnimationFrame(() => {
+    document.querySelectorAll('[data-count]').forEach(el => {
+      animateCountUp(el, parseInt(el.dataset.count) || 0, 1200);
+    });
+  });
+}
+
+function buildBoxTable(players) {
+  const teamA = players.filter(p => p.team === 'A');
+  const teamB = players.filter(p => p.team === 'B');
+
+  // Find leaders for each column
+  const leaders = {};
+  STAT_COLS.forEach(col => {
+    if (col === 'TO') return; // Lower is better for turnovers
+    let max = -Infinity; let leaderId = null;
+    players.forEach(p => { const v = Number(p[col]) || 0; if (v > max) { max = v; leaderId = p.id; } });
+    if (max > 0) leaders[col] = leaderId;
+  });
+
+  // Head
+  const head = document.getElementById('boxHead');
+  head.innerHTML = `<tr><th>JUGADOR</th>${STAT_COLS.map(c => {
+    const sorted = sortColumn === c;
+    const arrow = sorted ? (sortDirection === 'asc' ? '▲' : '▼') : '';
+    return `<th class="${sorted?'sorted':''}" onclick="sortTable('${c}')">${COL_LABELS[c]}<span class="sort-arrow">${arrow}</span></th>`;
+  }).join('')}</tr>`;
+
+  // Sort
+  let allPlayers = [...teamA, ...teamB];
+  if (sortColumn) {
+    allPlayers.sort((a, b) => {
+      const va = Number(a[sortColumn]) || 0;
+      const vb = Number(b[sortColumn]) || 0;
+      return sortDirection === 'asc' ? va - vb : vb - va;
+    });
+  }
+
+  // Body
+  const body = document.getElementById('boxBody');
+  body.innerHTML = '';
+  const groups = sortColumn
+    ? [{ label: null, players: allPlayers }]
+    : [{ label: 'Equipo A', cls: 'team-a', players: teamA }, { label: 'Equipo B', cls: 'team-b', players: teamB }];
+
+  let rowIdx = 0;
+  groups.forEach(g => {
+    if (g.label) {
+      const tr = document.createElement('tr');
+      tr.className = `team-header-row ${g.cls}`;
+      tr.innerHTML = `<td colspan="${STAT_COLS.length + 1}">${g.label}</td>`;
+      body.appendChild(tr);
+    }
+    g.players.forEach(p => {
+      const tr = document.createElement('tr');
+      tr.className = 'stagger-row';
+      tr.style.animationDelay = `${rowIdx * 50}ms`;
+      const nameTd = `<td><div class="player-name-cell"><span class="player-color-dot" style="background:${p.color||'#888'}"></span>${p.name}</div></td>`;
+      const statTds = STAT_COLS.map(c => {
+        const isLeader = leaders[c] === p.id && c !== 'TO';
+        return `<td class="${isLeader?'leader':''}">${formatStat(c, p[c])}</td>`;
+      }).join('');
+      tr.innerHTML = nameTd + statTds;
+      body.appendChild(tr);
+      rowIdx++;
+    });
+  });
+}
+
+function sortTable(col) {
+  if (sortColumn === col) {
+    sortDirection = sortDirection === 'desc' ? 'asc' : 'desc';
+  } else {
+    sortColumn = col;
+    sortDirection = 'desc';
+  }
+  if (statsData) {
+    const players = Object.entries(statsData).map(([id, s]) => ({ id, ...s }));
+    buildBoxTable(players);
+  }
+}
+
+/* ======================================================================
+   COUNT UP ANIMATION
+   ====================================================================== */
+function animateCountUp(el, target, duration) {
+  const start = performance.now();
+  const initial = 0;
+  function tick(now) {
+    const elapsed = now - start;
+    const t = Math.min(elapsed / duration, 1);
+    const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic
+    const current = Math.round(initial + (target - initial) * eased);
+    el.textContent = formatNumber(current);
+    if (t < 1) requestAnimationFrame(tick);
+    else el.textContent = formatNumber(target);
+  }
+  requestAnimationFrame(tick);
+}
+
+/* ======================================================================
+   EXPORT CSV
+   ====================================================================== */
+function downloadCSV() {
+  if (!statsData) return;
+  const players = Object.entries(statsData).map(([id, s]) => ({ id, ...s }));
+  const cols = ['Nombre','Equipo',...STAT_COLS.map(c=>COL_LABELS[c])];
+  let csv = cols.join(',') + '\n';
+  players.forEach(p => {
+    const row = [
+      `"${p.name}"`,
+      p.team === 'A' ? 'Equipo A' : 'Equipo B',
+      ...STAT_COLS.map(c => p[c] ?? '')
+    ];
+    csv += row.join(',') + '\n';
+  });
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const d = new Date();
+  a.download = `basketball_stats_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('CSV descargado.', 'success');
+}
+
+/* ======================================================================
+   EXPORT PDF
+   ====================================================================== */
+async function downloadPDF() {
+  if (!statsData) return;
+  showToast('Generando PDF, esperá un momento…', 'info');
+  try {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF('l', 'mm', 'a4'); // landscape
+    const pageW = doc.internal.pageSize.getWidth();
+
+    // Title
+    doc.setFontSize(22);
+    doc.setTextColor(249, 115, 22);
+    doc.text('Basketball Stats', 14, 20);
+    doc.setFontSize(11);
+    doc.setTextColor(150, 150, 150);
+    const dateStr = new Date().toLocaleDateString('es-AR', { year:'numeric', month:'long', day:'numeric' });
+    doc.text(dateStr, 14, 28);
+
+    // Team scores
+    const players = Object.entries(statsData).map(([id, s]) => ({ id, ...s }));
+    const teamA = players.filter(p => p.team === 'A');
+    const teamB = players.filter(p => p.team === 'B');
+    const ptsA = teamA.reduce((s, p) => s + (p.PTS || 0), 0);
+    const ptsB = teamB.reduce((s, p) => s + (p.PTS || 0), 0);
+    doc.setFontSize(14);
+    doc.setTextColor(88, 166, 255);
+    doc.text(`Equipo A: ${ptsA} pts`, 14, 38);
+    doc.setTextColor(248, 81, 73);
+    doc.text(`Equipo B: ${ptsB} pts`, 90, 38);
+
+    // Table via html2canvas
+    const tableEl = document.getElementById('tableWrap');
+    const canvas = await html2canvas(tableEl, { backgroundColor: '#0d1117', scale: 1.5 });
+    const imgData = canvas.toDataURL('image/png');
+    const imgW = pageW - 28;
+    const imgH = (canvas.height * imgW) / canvas.width;
+    doc.addImage(imgData, 'PNG', 14, 46, imgW, Math.min(imgH, 150));
+
+    doc.save(`basketball_stats_${new Date().toISOString().slice(0,10)}.pdf`);
+    showToast('PDF descargado.', 'success');
+  } catch (err) {
+    showToast('Error generando PDF: ' + err.message, 'error');
+  }
+}
+
+/* ======================================================================
+   RESET
+   ====================================================================== */
+function resetAll() {
+  if (!confirm('¿Estás seguro de empezar un nuevo análisis? Se perderán los datos actuales.')) return;
+  fetch('/reset', { method: 'POST' }).catch(() => {});
+  jobId = null;
+  uploadedFilename = null;
+  detectionResult = null;
+  statsData = null;
+  annotatedVideoUrl = null;
+  sortColumn = null;
+  sortDirection = 'desc';
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  // Reset UI
+  document.getElementById('fileInfoCard').classList.remove('visible');
+  document.getElementById('uploadProgress').classList.remove('visible');
+  document.getElementById('uploadBar').style.width = '0%';
+  document.getElementById('uploadPct').textContent = '0%';
+  document.getElementById('uploadStage').textContent = 'Subiendo video…';
+  document.getElementById('fileInput').value = '';
+  document.getElementById('detectProgressWrap').style.display = 'none';
+  document.getElementById('analyzeProgressWrap').style.display = 'none';
+  document.getElementById('btnDetect').disabled = false;
+  document.getElementById('btnDetect').textContent = '🔍 Iniciar Detección con YOLOv8';
+  document.getElementById('btnAnalyze').disabled = false;
+  document.getElementById('btnAnalyze').textContent = '📊 Analizar y Generar Estadísticas';
+  document.getElementById('videoSection').style.display = 'none';
+  goToStep(1);
+  showToast('Listo para un nuevo análisis.', 'info');
+  checkHealth();
+}
+
+</script>
+</body>
+</html>

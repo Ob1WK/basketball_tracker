@@ -1,0 +1,31 @@
+# Directorios temporales
+uploads/
+processed/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# YOLO models (se descargan automáticamente)
+*.pt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Entornos virtuales
+venv/
+.venv/
+env/
