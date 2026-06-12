@@ -4,7 +4,7 @@ Usa YOLOv8 para detectar jugadores, pelota y aro en video de pickup basketball.
 Incluye motor de estadísticas avanzado con máquina de estados para detección de tiros.
 """
 
-import os, json, uuid, time, math, threading, queue, subprocess, shutil
+import os, sys, json, uuid, time, math, threading, queue, subprocess, shutil
 from pathlib import Path
 from typing import Optional
 import cv2
@@ -22,6 +22,13 @@ PROC_DIR   = BASE_DIR / "processed"
 STATIC_DIR = BASE_DIR / "static"
 for d in [UPLOAD_DIR, PROC_DIR, STATIC_DIR]:
     d.mkdir(exist_ok=True)
+
+# ── Fix encoding para consola Windows ──────────────────────────────────────
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass  # En algunos entornos reconfigure no está disponible
 
 # ── Modelo YOLO ────────────────────────────────────────────────────────────
 # El usuario puede cambiar el modelo desde la UI
