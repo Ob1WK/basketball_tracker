@@ -955,14 +955,34 @@ def _compute_stats(player_map, track_data, ball_positions, hoop, fps,
     if not sorted_ball_frames:
         return player_stats
 
-    # ── Constantes de distancia ───────────────────────────────────────────
-    POSSESSION_DIST = h * 0.25       # Distancia para considerar posesión
+    # ── Constantes de distancia (ajustadas para pickup filmado desde el piso) ─
+    # La perspectiva de cámara baja distorsiona las distancias reales
+    POSSESSION_DIST = h * 0.35       # Radio amplio para posesión (perspectiva baja)
     hoop_cx = hoop.get("cx", w / 2)
     hoop_cy = hoop.get("cy", h * 0.2)
     hoop_radius = hoop.get("radius", h * 0.08)
-    HOOP_OUTER_R    = hoop_radius * 3.5   # Radio exterior para "cerca del aro"
-    HOOP_INNER_R    = HOOP_OUTER_R * 0.7  # Radio interior para "enceste"
-    THREE_PT_DIST   = h * 0.45            # Distancia estimada de línea de 3 puntos
+    HOOP_OUTER_R    = hoop_radius * 5.0    # Radio exterior amplio para "cerca del aro"
+    HOOP_INNER_R    = HOOP_OUTER_R * 0.5   # Radio interior para "enceste"
+    THREE_PT_DIST   = h * 0.55             # Línea de 3 puntos estimada
+
+    print(f'📏 Stats engine configurado:')
+    print(f'   Frame: {w}x{h}, FPS: {fps}, Sample: {sample_every}')
+    print(f'   Aro estimado: ({hoop_cx:.0f}, {hoop_cy:.0f}), radio: {hoop_radius:.0f}')
+    print(f'   POSSESSION_DIST: {POSSESSION_DIST:.0f}px')
+    print(f'   HOOP_OUTER_R: {HOOP_OUTER_R:.0f}px, HOOP_INNER_R: {HOOP_INNER_R:.0f}px')
+    print(f'   Detecciones pelota: {len(sorted_ball_frames)}')
+    print(f'   Jugadores: {list(player_map.keys())}')
+
+    # Debug: verificar que tracks tienen datos
+    for tid_str in player_map:
+        tid_int = int(tid_str)
+        if tid_int in track_data:
+            td = track_data[tid_int]
+            n_frames = len(td.get('frames', []))
+            n_bboxes = len(td.get('bbox_history', []))
+            print(f'   Track {tid_str}: {n_frames} frames, {n_bboxes} bboxes')
+        else:
+            print(f'   ⚠️ Track {tid_str}: NO ENCONTRADO en track_data (claves: {list(track_data.keys())[:5]})')
 
     # ── Construir mapa rápido de posiciones de jugadores por frame ────────
     # Para cada frame, guardar la posición más cercana disponible de cada jugador
@@ -982,8 +1002,9 @@ def _compute_stats(player_map, track_data, ball_positions, hoop, fps,
             if diff < best_diff:
                 best_diff = diff
                 best = b
-        # Si la detección más cercana está a más de 1 segundo, no es válida
-        if best_diff > fps:
+        # Si la detección más cercana está a más de 2 segundos, no es válida
+        # (era 1 segundo, ampliado para videos con tracking intermitente)
+        if best_diff > fps * 2:
             return None
         return best
 
@@ -1004,6 +1025,13 @@ def _compute_stats(player_map, track_data, ball_positions, hoop, fps,
 
     # ── Registro de tiros fallidos para rebotes ──────────────────────────
     pending_rebound = None  # (frame_miss, shooter_tid_str)
+
+    # ── Contadores de debug ──────────────────────────────────────────────
+    dbg_possessions = 0
+    dbg_approaches = 0
+    dbg_near_hoop = 0
+    dbg_makes = 0
+    dbg_misses = 0
 
     total_ball_frames = len(sorted_ball_frames)
 
@@ -1028,9 +1056,11 @@ def _compute_stats(player_map, track_data, ball_positions, hoop, fps,
                 closest_dist = dist
                 closest_tid_str = tid_str
 
-        # ── Determinar poseedor ──────────────────────────────────────────
+        # ── Determinar poseedor ──────────────────────────────────────
         holder = closest_tid_str if closest_dist < POSSESSION_DIST else None
         possession_sequence.append((frame, holder))
+        if holder is not None:
+            dbg_possessions += 1
 
         # ── Detección de turnover / steal ────────────────────────────────
         if prev_holder and holder and holder != prev_holder:
@@ -1082,14 +1112,15 @@ def _compute_stats(player_map, track_data, ball_positions, hoop, fps,
                 shot_state = SHOT_APPROACHING
                 shot_shooter = prev_holder
                 shot_release_frame = frame
-                # Guardar posición del lanzador al momento del tiro
                 pos = _get_player_pos_at_frame(shot_shooter, frame)
                 shot_shooter_pos = pos
+                dbg_approaches += 1
 
         elif shot_state == SHOT_APPROACHING:
             if ball_to_hoop < HOOP_OUTER_R:
                 # Pelota entró en zona del aro
                 shot_state = SHOT_NEAR_HOOP
+                dbg_near_hoop += 1
             elif ball_to_hoop > HOOP_OUTER_R * 2.5:
                 # La pelota se alejó demasiado, cancelar
                 shot_state = SHOT_IDLE
@@ -1119,6 +1150,8 @@ def _compute_stats(player_map, track_data, ball_positions, hoop, fps,
                     if is_three:
                         player_stats[shot_shooter]["3PM"] += 1
                         player_stats[shot_shooter]["3PA"] += 1
+                    dbg_makes += 1
+                    print(f'   🏀 ENCESTE: {player_stats[shot_shooter]["name"]} +{pts}pts (frame {frame})')
 
                     # ── Asistencia: último pasador distinto al lanzador ──
                     if (last_passer and last_passer != shot_shooter
@@ -1158,6 +1191,8 @@ def _compute_stats(player_map, track_data, ball_positions, hoop, fps,
                     player_stats[shot_shooter]["FGA"] += 1
                     if is_three:
                         player_stats[shot_shooter]["3PA"] += 1
+                    dbg_misses += 1
+                    print(f'   ❌ TIRO FALLIDO: {player_stats[shot_shooter]["name"]} (frame {frame})')
 
                     # Activar búsqueda de rebote
                     pending_rebound = (frame, shot_shooter)
@@ -1178,6 +1213,16 @@ def _compute_stats(player_map, track_data, ball_positions, hoop, fps,
         ps["FG_PCT"] = round(ps["FGM"] / ps["FGA"], 3) if ps["FGA"] > 0 else 0.0
         ps["3P_PCT"] = round(ps["3PM"] / ps["3PA"], 3) if ps["3PA"] > 0 else 0.0
         ps["FT_PCT"] = round(ps["FTM"] / ps["FTA"], 3) if ps["FTA"] > 0 else 0.0
+
+    # ── Resumen de debug ────────────────────────────────────────────────
+    print(f'\n📊 RESUMEN STATS ENGINE:')
+    print(f'   Detecciones de posesión: {dbg_possessions}/{total_ball_frames} frames')
+    print(f'   Transiciones APPROACHING: {dbg_approaches}')
+    print(f'   Transiciones NEAR_HOOP: {dbg_near_hoop}')
+    print(f'   Encestes (FGM): {dbg_makes}')
+    print(f'   Tiros fallidos: {dbg_misses}')
+    for tid_str, ps in player_stats.items():
+        print(f'   {ps["name"]}: {ps["PTS"]}pts {ps["REB"]}reb {ps["AST"]}ast {ps["STL"]}stl {ps["TO"]}to')
 
     if progress_callback:
         progress_callback(100)
