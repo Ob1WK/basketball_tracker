@@ -1145,7 +1145,7 @@ def _generate_annotated_video(job_id, job, player_map, hoop, stats,
 
 if __name__ == '__main__':
     print('\n🏀 Basketball Stats Tracker v2.0')
-    print('📺 Abrí http://localhost:8000 en tu browser')
+    print('📺 Abrí http://localhost:8080 en tu browser')
     print(f'🧠 Modelo: {MODEL_NAME}')
     print(f'🎬 ffmpeg: {"✅" if shutil.which("ffmpeg") else "❌ (video sin audio)"}')
     # Verificar disponibilidad de GPU
@@ -1158,4 +1158,4 @@ if __name__ == '__main__':
     except Exception:
         print('💻 Usando CPU')
     print()
-    uvicorn.run(app, host='0.0.0.0', port=8000, reload=False)
+    uvicorn.run(app, host='0.0.0.0', port=8080, reload=False)

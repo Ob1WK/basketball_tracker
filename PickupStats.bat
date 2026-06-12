@@ -33,8 +33,8 @@ if not exist "%~dp0server.py" (
 )
 
 :: Abrir el browser despues de 2 segundos
-echo  Abriendo http://localhost:8000 en tu browser...
-start "" cmd /c "timeout /t 2 /nobreak >nul & start http://localhost:8000"
+echo  Abriendo http://localhost:8080 en tu browser...
+start "" cmd /c "timeout /t 2 /nobreak >nul & start http://localhost:8080"
 
 echo  Iniciando servidor...
 echo.

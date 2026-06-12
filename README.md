@@ -57,7 +57,7 @@ pip install ultralytics fastapi uvicorn[standard] opencv-python python-multipart
 python server.py
 
 # 4. Abrir en el browser
-# http://localhost:8000
+# http://localhost:8080
 ```
 
 ---
