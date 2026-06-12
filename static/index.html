@@ -592,6 +592,43 @@ body::before {
 .disclaimer-icon { font-size: 24px; flex-shrink: 0; }
 
 /* ===== MODEL SELECTOR ===== */
+.calibration-tool { margin-bottom: 24px; }
+.calibration-toolbar {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  margin-bottom: 12px;
+}
+.calibration-stage {
+  position: relative; width: 100%; max-width: 980px;
+  background: #05070b; border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden;
+}
+.calibration-stage img { width: 100%; display: block; user-select: none; }
+.calibration-stage canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  cursor: crosshair;
+}
+.calibration-list {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px; margin-top: 12px;
+}
+.calibration-player {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px; display: grid; gap: 8px;
+}
+.calibration-player-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; }
+.calibration-player input[type="text"] {
+  min-width: 0; background: var(--surface); border: 1px solid var(--border);
+  color: var(--text); border-radius: 6px; padding: 8px 10px;
+}
+.calibration-player select {
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text); border-radius: 6px; padding: 8px;
+}
+.calibration-player input[type="color"] {
+  width: 36px; height: 34px; border: 0; background: transparent; padding: 0;
+}
+.calibration-hint { font-size: 12px; color: var(--text-muted); margin-bottom: 10px; }
+
 .model-selector { margin-bottom: 24px; }
 .model-selector h3 { font-size: 14px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
 .model-grid {
@@ -856,6 +893,22 @@ body::before {
         </div>
       </div>
 
+      <div class="calibration-tool" id="calibrationTool">
+        <h3>Calibración de cámara fija</h3>
+        <p class="calibration-hint">Marcá el aro con un click. Para cada jugador, arrastrá un rectángulo sobre su cuerpo en el primer frame.</p>
+        <div class="calibration-toolbar">
+          <button class="btn btn-secondary btn-sm" id="calHoopBtn" onclick="setCalibrationMode('hoop')">Aro</button>
+          <button class="btn btn-secondary btn-sm" id="calPlayerBtn" onclick="setCalibrationMode('player')">Jugador</button>
+          <button class="btn btn-ghost btn-sm" onclick="undoCalibration()">Deshacer</button>
+          <button class="btn btn-ghost btn-sm" onclick="clearCalibration()">Limpiar</button>
+        </div>
+        <div class="calibration-stage" id="calibrationStage">
+          <img id="calibrationFrame" alt="Primer frame para calibración">
+          <canvas id="calibrationCanvas"></canvas>
+        </div>
+        <div class="calibration-list" id="calibrationPlayers"></div>
+      </div>
+
       <div class="format-selector">
         <h3>🏀 Formato del Partido</h3>
         <p>Seleccioná el formato para que la IA filtre mejor los jugadores y no detecte espectadores.</p>
@@ -1057,6 +1110,11 @@ let sortDirection = 'desc';
 const STAT_COLS = ['MIN','PTS','REB','AST','FGM','FGA','FG_PCT','3PM','3PA','3P_PCT','FTM','FTA','FT_PCT','OREB','DREB','STL','BLK','TO','PLUS_MINUS'];
 const COL_LABELS = {MIN:'MIN',PTS:'PTS',REB:'REB',AST:'AST',FGM:'FGM',FGA:'FGA',FG_PCT:'FG%','3PM':'3PM','3PA':'3PA','3P_PCT':'3P%',FTM:'FTM',FTA:'FTA',FT_PCT:'FT%',OREB:'OREB',DREB:'DREB',STL:'STL',BLK:'BLK',TO:'TO',PLUS_MINUS:'+/-'};
 const VALID_EXTENSIONS = ['mp4','mov','avi','mkv'];
+let calibrationMode = 'hoop';
+let calibrationHoop = null;
+let calibrationPlayers = [];
+let calibrationDragging = null;
+let calibrationImageSize = { width: 0, height: 0 };
 
 /* ======================================================================
    UTILITIES
@@ -1288,6 +1346,7 @@ function uploadFile(file) {
         // Setup detect panel
         document.getElementById('detectFileName').textContent = uploadedFilename;
         document.getElementById('detectJobId').textContent = jobId;
+        loadCalibrationFrame();
         setTimeout(() => goToStep(2), 600);
       } catch {
         showToast('Respuesta inválida del servidor.', 'error');
@@ -1349,6 +1408,178 @@ function listenSSE(jid, onMessage, onDone, onError) {
 /* ======================================================================
    PANEL 2: DETECT
    ====================================================================== */
+function setupCalibrationCanvas() {
+  const img = document.getElementById('calibrationFrame');
+  const canvas = document.getElementById('calibrationCanvas');
+  if (!img || !canvas) return;
+  const syncCanvas = () => {
+    canvas.width = img.clientWidth || img.naturalWidth;
+    canvas.height = img.clientHeight || img.naturalHeight;
+    calibrationImageSize = { width: img.naturalWidth || canvas.width, height: img.naturalHeight || canvas.height };
+    drawCalibration();
+  };
+  img.onload = syncCanvas;
+  window.addEventListener('resize', syncCanvas);
+
+  canvas.addEventListener('mousedown', e => {
+    const p = calibrationCanvasPoint(e);
+    if (calibrationMode === 'hoop') {
+      calibrationHoop = { x: p.x, y: p.y, radius: Math.max(18, canvas.height * 0.035) };
+      drawCalibration();
+      return;
+    }
+    calibrationDragging = { startX: p.x, startY: p.y, x: p.x, y: p.y };
+  });
+  canvas.addEventListener('mousemove', e => {
+    if (!calibrationDragging) return;
+    const p = calibrationCanvasPoint(e);
+    calibrationDragging.x = p.x;
+    calibrationDragging.y = p.y;
+    drawCalibration();
+  });
+  window.addEventListener('mouseup', () => {
+    if (!calibrationDragging) return;
+    const d = calibrationDragging;
+    calibrationDragging = null;
+    const x = Math.min(d.startX, d.x);
+    const y = Math.min(d.startY, d.y);
+    const w = Math.abs(d.x - d.startX);
+    const h = Math.abs(d.y - d.startY);
+    if (w < 12 || h < 24) { drawCalibration(); return; }
+    const n = calibrationPlayers.length + 1;
+    const colors = ['#58a6ff','#f85149','#3fb950','#bc8cff','#f0c000','#fb923c','#ff6bcb','#00d4ff'];
+    calibrationPlayers.push({ name: `Jugador ${n}`, team: n % 2 ? 'A' : 'B', color: colors[(n - 1) % colors.length], x, y, w, h });
+    renderCalibrationPlayers();
+    drawCalibration();
+  });
+}
+
+function loadCalibrationFrame() {
+  const img = document.getElementById('calibrationFrame');
+  if (!img || !jobId) return;
+  img.src = `/first_frame/${jobId}?t=${Date.now()}`;
+  setupCalibrationCanvas();
+}
+
+function setCalibrationMode(mode) {
+  calibrationMode = mode;
+  document.getElementById('calHoopBtn')?.classList.toggle('btn-primary', mode === 'hoop');
+  document.getElementById('calPlayerBtn')?.classList.toggle('btn-primary', mode === 'player');
+}
+
+function calibrationCanvasPoint(e) {
+  const canvas = document.getElementById('calibrationCanvas');
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) * (canvas.width / rect.width),
+    y: (e.clientY - rect.top) * (canvas.height / rect.height)
+  };
+}
+
+function scaleCalibrationRect(r) {
+  const canvas = document.getElementById('calibrationCanvas');
+  const sx = calibrationImageSize.width / Math.max(1, canvas.width);
+  const sy = calibrationImageSize.height / Math.max(1, canvas.height);
+  return { x: r.x * sx, y: r.y * sy, w: r.w * sx, h: r.h * sy };
+}
+
+function scaleCalibrationPoint(p) {
+  const canvas = document.getElementById('calibrationCanvas');
+  const sx = calibrationImageSize.width / Math.max(1, canvas.width);
+  const sy = calibrationImageSize.height / Math.max(1, canvas.height);
+  return { x: p.x * sx, y: p.y * sy, radius: (p.radius || 32) * ((sx + sy) / 2) };
+}
+
+function drawCalibration() {
+  const canvas = document.getElementById('calibrationCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.lineWidth = 2;
+  ctx.font = '600 13px Inter, sans-serif';
+
+  if (calibrationHoop) {
+    ctx.strokeStyle = '#f0c000';
+    ctx.fillStyle = 'rgba(240,192,0,.18)';
+    ctx.beginPath();
+    ctx.arc(calibrationHoop.x, calibrationHoop.y, calibrationHoop.radius, 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#f0c000';
+    ctx.fillText('Aro', calibrationHoop.x + 10, calibrationHoop.y - 10);
+  }
+  calibrationPlayers.forEach((p, i) => {
+    ctx.strokeStyle = p.color;
+    ctx.fillStyle = p.color + '33';
+    ctx.strokeRect(p.x, p.y, p.w, p.h);
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+    ctx.fillStyle = p.color;
+    ctx.fillText(p.name || `Jugador ${i + 1}`, p.x + 6, Math.max(16, p.y - 6));
+  });
+  if (calibrationDragging) {
+    const d = calibrationDragging;
+    ctx.strokeStyle = '#f97316';
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(Math.min(d.startX, d.x), Math.min(d.startY, d.y), Math.abs(d.x - d.startX), Math.abs(d.y - d.startY));
+    ctx.setLineDash([]);
+  }
+}
+
+function renderCalibrationPlayers() {
+  const list = document.getElementById('calibrationPlayers');
+  if (!list) return;
+  list.innerHTML = '';
+  calibrationPlayers.forEach((p, i) => {
+    const el = document.createElement('div');
+    el.className = 'calibration-player';
+    el.innerHTML = `
+      <div class="calibration-player-row">
+        <input type="text" value="${p.name}" onchange="updateCalibrationPlayer(${i}, 'name', this.value)">
+        <select onchange="updateCalibrationPlayer(${i}, 'team', this.value)">
+          <option value="A" ${p.team === 'A' ? 'selected' : ''}>Equipo A</option>
+          <option value="B" ${p.team === 'B' ? 'selected' : ''}>Equipo B</option>
+        </select>
+        <input type="color" value="${p.color}" onchange="updateCalibrationPlayer(${i}, 'color', this.value)">
+      </div>
+    `;
+    list.appendChild(el);
+  });
+}
+
+function updateCalibrationPlayer(i, key, value) {
+  if (!calibrationPlayers[i]) return;
+  calibrationPlayers[i][key] = value;
+  drawCalibration();
+}
+
+function undoCalibration() {
+  if (calibrationPlayers.length) calibrationPlayers.pop();
+  else calibrationHoop = null;
+  renderCalibrationPlayers();
+  drawCalibration();
+}
+
+function clearCalibration() {
+  calibrationHoop = null;
+  calibrationPlayers = [];
+  renderCalibrationPlayers();
+  drawCalibration();
+}
+
+async function saveCalibration() {
+  if (!calibrationHoop) throw new Error('Marcá el aro antes de detectar');
+  if (!calibrationPlayers.length) throw new Error('Marcá al menos un jugador');
+  const players = calibrationPlayers.map(p => ({ ...p, ...scaleCalibrationRect(p) }));
+  const hoop = scaleCalibrationPoint(calibrationHoop);
+  const r = await fetch(`/calibrate/${jobId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hoop, players, frame: calibrationImageSize })
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || 'Error calibrando');
+  return d;
+}
+
 function startDetection() {
   const btn = document.getElementById('btnDetect');
   btn.disabled = true;
@@ -1356,14 +1587,16 @@ function startDetection() {
   document.getElementById('detectProgressWrap').style.display = 'block';
   document.getElementById('modelSelector').style.display = 'none';
   document.querySelector('.format-selector').style.display = 'none';
+  document.getElementById('calibrationTool').style.display = 'none';
   const startMs = Date.now();
 
   // Enviar configuración del formato de juego antes de detectar
-  fetch(`/configure/${jobId}`, {
+  saveCalibration()
+  .then(() => fetch(`/configure/${jobId}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ game_format: gameFormat })
-  })
+  }))
   .then(r => { if (!r.ok) throw new Error('Error configurando'); return r.json(); })
   .then(() => {
     btn.textContent = '⏳ Detectando…';
@@ -1397,6 +1630,7 @@ function startDetection() {
     .catch(err => {
       showToast('No se pudo iniciar la detección: ' + err.message, 'error');
       btn.disabled = false;
+      document.getElementById('calibrationTool').style.display = 'block';
       btn.textContent = '🔍 Reintentar Detección';
     });
 }
@@ -1423,6 +1657,7 @@ function buildPlayerGrid(dr) {
   sb.innerHTML = `
     <div class="summary-stat"><div class="val">${dr.track_ids ? dr.track_ids.length : Object.keys(dr.tracks).length}</div><div class="lbl">Jugadores</div></div>
     <div class="summary-stat"><div class="val">${formatNumber(dr.ball_detections)}</div><div class="lbl">Det. Pelota</div></div>
+    <div class="summary-stat"><div class="val">${formatNumber(dr.hoop_detections || 0)}</div><div class="lbl">Det. Aro</div></div>
     <div class="summary-stat"><div class="val">${formatNumber(dr.total_frames)}</div><div class="lbl">Frames</div></div>
     <div class="summary-stat"><div class="val">${dr.resolution || '—'}</div><div class="lbl">Resolución</div></div>
     ${dr.game_format ? `<div class="summary-stat"><div class="val">${dr.game_format}</div><div class="lbl">Formato</div></div>` : ''}
@@ -1435,9 +1670,11 @@ function buildPlayerGrid(dr) {
   const teamColors = ['#58a6ff','#f85149','#3fb950','#bc8cff','#f0c000','#fb923c','#ff6bcb','#0ef','#99f','#ff9'];
   ids.forEach((tid, i) => {
     const t = dr.tracks[String(tid)] || {};
+    const suggested = t.suggested_player || {};
     const thumb = t.thumbnail || '';
     const frames = t.frame_count || 0;
-    const color = teamColors[i % teamColors.length];
+    const color = suggested.color || teamColors[i % teamColors.length];
+    const suggestedName = suggested.name || '';
     const card = document.createElement('div');
     card.className = 'player-card';
     card.dataset.tid = tid;
@@ -1452,7 +1689,7 @@ function buildPlayerGrid(dr) {
       <div class="player-fields">
         <div class="field-group">
           <label>Nombre</label>
-          <input type="text" class="p-name" placeholder="Nombre del jugador" value="">
+          <input type="text" class="p-name" placeholder="Nombre del jugador" value="${suggestedName}">
         </div>
         <div class="field-row">
           <div class="field-group">
@@ -1473,8 +1710,8 @@ function buildPlayerGrid(dr) {
         </div>
       </div>
     `;
-    // Alternate default teams
-    if (i % 2 === 1) card.querySelector('.p-team').value = 'B';
+    if (suggested.team) card.querySelector('.p-team').value = suggested.team;
+    else if (i % 2 === 1) card.querySelector('.p-team').value = 'B';
     grid.appendChild(card);
   });
 }
@@ -1925,6 +2162,9 @@ function resetAll() {
   annotatedVideoUrl = null;
   sortColumn = null;
   sortDirection = 'desc';
+  calibrationHoop = null;
+  calibrationPlayers = [];
+  calibrationDragging = null;
   if (eventSource) { eventSource.close(); eventSource = null; }
   // Reset UI
   document.getElementById('fileInfoCard').classList.remove('visible');
@@ -1934,6 +2174,12 @@ function resetAll() {
   document.getElementById('uploadStage').textContent = 'Subiendo video…';
   document.getElementById('fileInput').value = '';
   document.getElementById('detectProgressWrap').style.display = 'none';
+  document.getElementById('calibrationTool').style.display = 'block';
+  document.querySelector('.format-selector').style.display = 'block';
+  document.getElementById('modelSelector').style.display = 'block';
+  document.getElementById('calibrationFrame').removeAttribute('src');
+  renderCalibrationPlayers();
+  drawCalibration();
   document.getElementById('analyzeProgressWrap').style.display = 'none';
   document.getElementById('btnDetect').disabled = false;
   document.getElementById('btnDetect').textContent = '🔍 Iniciar Detección con YOLOv8';

@@ -33,6 +33,7 @@ except Exception:
 # ── Modelo YOLO ────────────────────────────────────────────────────────────
 # El usuario puede cambiar el modelo desde la UI
 MODEL_NAME = 'yolov8s.pt'
+BALL_HOOP_MODEL_NAME = 'basketball_shot_yolov8.pt'
 
 # Modelos disponibles con descripción para la UI
 AVAILABLE_MODELS = {
@@ -74,7 +75,9 @@ app.mount("/processed", StaticFiles(directory=str(PROC_DIR)), name="processed")
 
 # ── Carga diferida del modelo YOLO ─────────────────────────────────────────
 _model = None
+_ball_hoop_model = None
 _model_lock = threading.Lock()
+_ball_hoop_model_lock = threading.Lock()
 
 def get_model():
     """Carga el modelo YOLO de forma diferida y thread-safe."""
@@ -87,12 +90,29 @@ def get_model():
             print('✅ Modelo cargado correctamente')
         return _model
 
+def get_ball_hoop_model():
+    """Carga el modelo especializado en pelota y aro si esta disponible."""
+    global _ball_hoop_model
+    model_path = BASE_DIR / BALL_HOOP_MODEL_NAME
+    if not model_path.exists():
+        return None
+
+    with _ball_hoop_model_lock:
+        if _ball_hoop_model is None:
+            from ultralytics import YOLO
+            print(f'🏀 Cargando modelo basket {BALL_HOOP_MODEL_NAME}...')
+            _ball_hoop_model = YOLO(str(model_path))
+            print(f'✅ Modelo basket cargado: {_ball_hoop_model.names}')
+        return _ball_hoop_model
+
 # ── Almacén de jobs en memoria ─────────────────────────────────────────────
 jobs: dict = {}
 
 # ── IDs de clase COCO relevantes ───────────────────────────────────────────
 PERSON_CLASS      = 0
 SPORTS_BALL_CLASS = 32
+BASKETBALL_ALIASES = {'basketball', 'ball'}
+HOOP_ALIASES       = {'basketball hoop', 'hoop', 'rim', 'basket', 'net'}
 
 # ── Estados de la máquina de estados de tiros ──────────────────────────────
 SHOT_IDLE        = 0   # Sin actividad de tiro
@@ -120,6 +140,7 @@ def _create_job(video_path: str, filename: str) -> dict:
         '_raw_track_data': {},
         '_ball_positions': [],
         '_hoop_region': {},
+        '_manual_calibration': None,
         '_fps': 30,
         '_total_frames': 0,
         '_wh': (1280, 720),
@@ -139,14 +160,66 @@ def _check_gpu() -> bool:
         return False
 
 
-def _estimate_hoop(ball_positions, h, w):
+def _class_ids_by_alias(model, aliases):
+    names = getattr(model, 'names', {}) or {}
+    return {
+        int(cls_id)
+        for cls_id, name in names.items()
+        if str(name).strip().lower() in aliases
+    }
+
+
+def _detect_basket_objects(model, frame, frame_idx, conf=0.15):
+    """Devuelve detecciones del modelo especializado: pelotas y aros."""
+    ball_ids = _class_ids_by_alias(model, BASKETBALL_ALIASES)
+    hoop_ids = _class_ids_by_alias(model, HOOP_ALIASES)
+    balls, hoops = [], []
+
+    results = model.predict(frame, conf=conf, iou=0.5, verbose=False)
+    if not results or results[0].boxes is None:
+        return balls, hoops
+
+    boxes = results[0].boxes
+    for i, raw_cls_id in enumerate(boxes.cls.tolist()):
+        cls_id = int(raw_cls_id)
+        x1, y1, x2, y2 = boxes.xyxy[i].tolist()
+        det_conf = float(boxes.conf[i])
+        cx = (x1 + x2) / 2
+        cy = (y1 + y2) / 2
+        item = {
+            "frame": frame_idx, "x": cx, "y": cy,
+            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+            "w": x2 - x1, "h": y2 - y1, "conf": det_conf
+        }
+        if cls_id in ball_ids:
+            balls.append(item)
+        elif cls_id in hoop_ids:
+            hoops.append(item)
+
+    return balls, hoops
+
+
+def _estimate_hoop(ball_positions, h, w, hoop_positions=None):
     """
     Estima la posición del aro usando el 10% superior de posiciones de la pelota.
     Usa las posiciones más altas (y más bajo numéricamente) ponderadas por ubicación.
     """
+    if hoop_positions:
+        best = sorted(hoop_positions, key=lambda p: p.get("conf", 0), reverse=True)
+        best = best[:min(50, len(best))]
+        cx = float(np.mean([p["x"] for p in best]))
+        cy = float(np.mean([p["y"] for p in best]))
+        box_sizes = [max(p.get("w", 0), p.get("h", 0)) for p in best]
+        radius = float(max(h * 0.035, np.median(box_sizes) * 0.45))
+        return {
+            "cx": cx, "cy": cy, "radius": radius,
+            "source": "basketball_shot_yolov8",
+            "detections": len(hoop_positions),
+        }
+
     if not ball_positions:
         # Valor por defecto: zona central-superior del frame
-        return {"cx": w * 0.5, "cy": h * 0.2, "radius": h * 0.08}
+        return {"cx": w * 0.5, "cy": h * 0.2, "radius": h * 0.08, "source": "default"}
 
     # Tomar el 10% superior de posiciones de la pelota (las de menor y)
     n_top = max(1, len(ball_positions) // 10)
@@ -156,7 +229,7 @@ def _estimate_hoop(ball_positions, h, w):
     cy = float(np.mean([b["y"] for b in top_positions]))
     radius = float(h * 0.08)
 
-    return {"cx": cx, "cy": cy, "radius": radius}
+    return {"cx": cx, "cy": cy, "radius": radius, "source": "ball_trajectory"}
 
 
 def _consolidate_tracks(track_data, expected_players, fps, sample_every):
@@ -272,6 +345,64 @@ def _consolidate_tracks(track_data, expected_players, fps, sample_every):
     return result
 
 
+def _match_manual_players_to_tracks(manual_players, tracks, w, h):
+    """Empareja jugadores marcados en el primer frame con tracks detectados."""
+    if not manual_players or not tracks:
+        return {}, {}
+
+    matches = {}
+    suggestions = {}
+    used_tracks = set()
+
+    def _track_score(player, tid, td):
+        bbox_hist = sorted(td.get('bbox_history', []), key=lambda b: b.get('frame', 0))
+        if not bbox_hist:
+            return None
+
+        # Priorizar los primeros bboxes: la calibracion se hizo sobre el frame 0.
+        candidates = bbox_hist[:min(8, len(bbox_hist))]
+        px = player.get('x', 0) + player.get('w', 0) / 2
+        py = player.get('y', 0) + player.get('h', 0) / 2
+        pw = max(1, player.get('w', 1))
+        ph = max(1, player.get('h', 1))
+        diag = math.hypot(w, h)
+
+        best = None
+        for b in candidates:
+            bw = max(1, b.get('x2', 0) - b.get('x1', 0))
+            bh = max(1, b.get('y2', 0) - b.get('y1', 0))
+            dist = math.hypot(px - b.get('cx', 0), py - b.get('cy', 0)) / diag
+            size_delta = abs(pw - bw) / max(pw, bw) + abs(ph - bh) / max(ph, bh)
+            score = dist * 4 + size_delta * 0.35
+            if best is None or score < best:
+                best = score
+        return best
+
+    for player in manual_players:
+        best_tid = None
+        best_score = None
+        for tid, td in tracks.items():
+            if tid in used_tracks:
+                continue
+            score = _track_score(player, tid, td)
+            if score is not None and (best_score is None or score < best_score):
+                best_score = score
+                best_tid = tid
+
+        # Umbral amplio para videos con perspectiva baja y deteccion inicial imperfecta.
+        if best_tid is not None and best_score is not None and best_score < 0.8:
+            used_tracks.add(best_tid)
+            info = {
+                "name": player.get("name") or f"Jugador {len(matches) + 1}",
+                "team": player.get("team", "A"),
+                "color": player.get("color", "#58a6ff"),
+            }
+            matches[str(best_tid)] = info
+            suggestions[str(best_tid)] = {**info, "manual_match_score": best_score}
+
+    return matches, suggestions
+
+
 def _try_merge_audio(original_path: str, annotated_path: str) -> str:
     """Intenta fusionar el audio del video original al anotado usando ffmpeg."""
     try:
@@ -333,6 +464,26 @@ async def upload_video(file: UploadFile = File(...)):
     return {"job_id": job_id, "filename": file.filename}
 
 
+@app.get("/first_frame/{job_id}")
+async def first_frame(job_id: str):
+    """Devuelve el primer frame del video para calibracion manual."""
+    if job_id not in jobs:
+        return JSONResponse({"error": "Job no encontrado"}, status_code=404)
+
+    job = jobs[job_id]
+    frame_path = PROC_DIR / f"{job_id}_first_frame.jpg"
+    if not frame_path.exists():
+        cap = cv2.VideoCapture(job["video_path"])
+        if not cap.isOpened():
+            return JSONResponse({"error": "No se pudo abrir el video"}, status_code=500)
+        ret, frame = cap.read()
+        cap.release()
+        if not ret or frame is None:
+            return JSONResponse({"error": "No se pudo leer el primer frame"}, status_code=500)
+        cv2.imwrite(str(frame_path), frame)
+    return FileResponse(str(frame_path), media_type="image/jpeg")
+
+
 @app.get("/progress/{job_id}")
 async def progress_stream(job_id: str):
     """
@@ -392,7 +543,7 @@ async def detect_objects(job_id: str):
         return JSONResponse({"error": "Job no encontrado"}, status_code=404)
 
     job = jobs[job_id]
-    if job['status'] != 'uploaded':
+    if job['status'] not in ('uploaded', 'calibrated'):
         return JSONResponse(
             {"error": f"Estado inválido: {job['status']}. Se requiere 'uploaded'."},
             status_code=400
@@ -431,6 +582,62 @@ async def configure_game(job_id: str, data: dict):
     job['game_format'] = game_format
     job['expected_players'] = valid_formats[game_format]
     return {'ok': True, 'game_format': game_format, 'expected_players': valid_formats[game_format]}
+
+
+@app.post("/calibrate/{job_id}")
+async def calibrate_court(job_id: str, data: dict):
+    """Guarda aro y jugadores marcados manualmente sobre el primer frame."""
+    if job_id not in jobs:
+        return JSONResponse({"error": "Job no encontrado"}, status_code=404)
+
+    hoop = data.get("hoop") or {}
+    players = data.get("players") or []
+    frame = data.get("frame") or {}
+
+    if not hoop or "x" not in hoop or "y" not in hoop:
+        return JSONResponse({"error": "Marcá la posición del aro antes de calibrar"}, status_code=400)
+    if not players:
+        return JSONResponse({"error": "Marcá al menos un jugador"}, status_code=400)
+
+    cleaned_players = []
+    for i, p in enumerate(players):
+        try:
+            cleaned_players.append({
+                "id": i + 1,
+                "name": (p.get("name") or f"Jugador {i + 1}").strip(),
+                "team": p.get("team", "A") if p.get("team") in ("A", "B") else "A",
+                "color": p.get("color", "#58a6ff"),
+                "x": float(p.get("x", 0)),
+                "y": float(p.get("y", 0)),
+                "w": max(1.0, float(p.get("w", 1))),
+                "h": max(1.0, float(p.get("h", 1))),
+            })
+        except Exception:
+            continue
+
+    if not cleaned_players:
+        return JSONResponse({"error": "No se pudieron leer los jugadores marcados"}, status_code=400)
+
+    calibration = {
+        "hoop": {
+            "cx": float(hoop["x"]),
+            "cy": float(hoop["y"]),
+            "radius": max(8.0, float(hoop.get("radius", 40))),
+            "source": "manual_first_frame",
+        },
+        "players": cleaned_players,
+        "frame": {
+            "width": int(frame.get("width", 0) or 0),
+            "height": int(frame.get("height", 0) or 0),
+        },
+    }
+
+    job = jobs[job_id]
+    job["_manual_calibration"] = calibration
+    job["_hoop_region"] = calibration["hoop"]
+    if job["status"] == "uploaded":
+        job["status"] = "calibrated"
+    return {"ok": True, "players": len(cleaned_players), "hoop": calibration["hoop"]}
 
 
 @app.post("/assign_players/{job_id}")
@@ -583,6 +790,7 @@ async def health():
     return {
         'status': 'ok',
         'model': MODEL_NAME,
+        'ball_hoop_model': BALL_HOOP_MODEL_NAME if (BASE_DIR / BALL_HOOP_MODEL_NAME).exists() else None,
         'gpu': _check_gpu(),
         'ffmpeg': shutil.which('ffmpeg') is not None,
         'jobs_count': len(jobs),
@@ -629,6 +837,7 @@ def _detect_worker(job_id: str):
     job = jobs[job_id]
     try:
         model = get_model()
+        ball_hoop_model = get_ball_hoop_model()
         video_path = job["video_path"]
 
         cap = cv2.VideoCapture(video_path)
@@ -643,12 +852,16 @@ def _detect_worker(job_id: str):
         # Estructuras de tracking
         track_data: dict = {}     # track_id -> datos del track
         ball_positions: list = []
+        hoop_positions: list = []
 
         frame_idx = 0
         # Procesar ~5 fps para balancear velocidad y precisión
         SAMPLE_EVERY = max(1, int(fps / 5))
 
-        job['stage'] = 'Detectando jugadores y pelota...'
+        if ball_hoop_model is not None:
+            job['stage'] = 'Detectando jugadores, pelota y aro...'
+        else:
+            job['stage'] = 'Detectando jugadores y pelota...'
 
         while cap.isOpened():
             ret, frame = cap.read()
@@ -658,14 +871,15 @@ def _detect_worker(job_id: str):
             if frame_idx % SAMPLE_EVERY == 0:
                 results = model.track(
                     frame, persist=True,
-                    classes=[PERSON_CLASS, SPORTS_BALL_CLASS],
+                    classes=[PERSON_CLASS] if ball_hoop_model is not None else [PERSON_CLASS, SPORTS_BALL_CLASS],
                     conf=0.3, iou=0.6, verbose=False,
                     tracker='bytetrack.yaml'
                 )
 
                 if results and results[0].boxes is not None:
                     boxes = results[0].boxes
-                    for i, cls_id in enumerate(boxes.cls.tolist()):
+                    for i, raw_cls_id in enumerate(boxes.cls.tolist()):
+                        cls_id = int(raw_cls_id)
                         x1, y1, x2, y2 = boxes.xyxy[i].tolist()
                         conf = float(boxes.conf[i])
                         tid = int(boxes.id[i]) if boxes.id is not None else -1
@@ -709,6 +923,11 @@ def _detect_worker(job_id: str):
                                 "conf": conf
                             })
 
+                if ball_hoop_model is not None:
+                    balls, hoops = _detect_basket_objects(ball_hoop_model, frame, frame_idx)
+                    ball_positions.extend(balls)
+                    hoop_positions.extend([hdet for hdet in hoops if hdet.get("conf", 0) >= 0.25])
+
             # Actualizar progreso
             if total_frames > 0:
                 job['progress'] = int(frame_idx / total_frames * 100)
@@ -730,7 +949,10 @@ def _detect_worker(job_id: str):
                 td["thumbnail"] = f"/processed/{job_id}_player_{tid}.jpg"
 
         # ── Estimar posición del aro ───────────────────────────────────────
-        hoop_region = _estimate_hoop(ball_positions, h, w)
+        manual_calibration = job.get("_manual_calibration") or {}
+        hoop_region = _estimate_hoop(ball_positions, h, w, hoop_positions)
+        if manual_calibration.get("hoop"):
+            hoop_region = manual_calibration["hoop"]
 
         # ── Filtrado inteligente basado en formato del partido ────────────
         expected_players = job.get('expected_players', 10)
@@ -767,6 +989,12 @@ def _detect_worker(job_id: str):
         max_tracks = min(len(sorted_tracks), expected_players + 4)
         valid_tracks = dict(sorted_tracks[:max_tracks])
 
+        manual_player_map, manual_suggestions = _match_manual_players_to_tracks(
+            manual_calibration.get("players", []), valid_tracks, w, h
+        )
+        if manual_player_map:
+            job["player_map"] = manual_player_map
+
         print(f'✅ Tracks finales mostrados: {len(valid_tracks)}')
 
         # ── Construir resultado de detección ──────────────────────────────
@@ -777,23 +1005,28 @@ def _detect_worker(job_id: str):
                     "thumbnail": td.get("thumbnail"),
                     "frame_count": len(td["frames"]),
                     "first_frame": td["first_frame"],
+                    "suggested_player": manual_suggestions.get(str(tid)),
                 } for tid, td in valid_tracks.items()
             },
             "ball_detections": len(ball_positions),
+            "hoop_detections": len(hoop_positions),
             "total_frames": total_frames,
             "fps": fps,
             "resolution": f"{w}x{h}",
             "hoop_region": hoop_region,
+            "ball_hoop_model": BALL_HOOP_MODEL_NAME if ball_hoop_model is not None else None,
             "game_format": game_format,
             "expected_players": expected_players,
             "raw_tracks_found": len(track_data),
+            "manual_calibration": bool(manual_calibration),
+            "manual_players_matched": len(manual_player_map),
         }
 
         # ── Guardar resultados en el job ──────────────────────────────────
         job["status"] = "detected"
         job["progress"] = 100
         job["stage"] = "Detección completada"
-        job["detail"] = f"{len(valid_tracks)} jugadores (de {len(track_data)} tracks crudos), {len(ball_positions)} detecciones de pelota"
+        job["detail"] = f"{len(valid_tracks)} jugadores (de {len(track_data)} tracks crudos), {len(ball_positions)} pelotas, {len(hoop_positions)} aros"
         job["detection_result"] = detection_result
         job["_raw_track_data"] = valid_tracks
         job["_ball_positions"] = ball_positions
@@ -1242,6 +1475,7 @@ def _generate_annotated_video(job_id, job, player_map, hoop, stats,
     """
     try:
         model = get_model()
+        ball_hoop_model = get_ball_hoop_model()
         video_path = job["video_path"]
         out_filename = f"{job_id}_annotated.mp4"
         out_path = str(PROC_DIR / out_filename)
@@ -1283,7 +1517,7 @@ def _generate_annotated_video(job_id, job, player_map, hoop, stats,
 
             results = model.track(
                 frame, persist=True,
-                classes=[PERSON_CLASS, SPORTS_BALL_CLASS],
+                classes=[PERSON_CLASS] if ball_hoop_model is not None else [PERSON_CLASS, SPORTS_BALL_CLASS],
                 conf=0.35, verbose=False
             )
 
@@ -1294,7 +1528,8 @@ def _generate_annotated_video(job_id, job, player_map, hoop, stats,
                 closest_to_ball_dist = float('inf')
                 closest_to_ball_name = None
 
-                for i, cls_id in enumerate(boxes.cls.tolist()):
+                for i, raw_cls_id in enumerate(boxes.cls.tolist()):
+                    cls_id = int(raw_cls_id)
                     x1, y1, x2, y2 = [int(v) for v in boxes.xyxy[i].tolist()]
                     tid = int(boxes.id[i]) if boxes.id is not None else -1
                     tid_str = str(tid)
@@ -1344,12 +1579,27 @@ def _generate_annotated_video(job_id, job, player_map, hoop, stats,
                         # Dibujar círculo naranja alrededor de la pelota
                         cv2.circle(frame, (cx, cy), 12, (0, 140, 255), 3)
 
+                if ball_hoop_model is not None:
+                    balls, hoops = _detect_basket_objects(ball_hoop_model, frame, frame_idx)
+                    if balls:
+                        ball = max(balls, key=lambda b: b.get("conf", 0))
+                        cx, cy = int(ball["x"]), int(ball["y"])
+                        ball_pos_this_frame = (cx, cy)
+                        cv2.circle(frame, (cx, cy), 12, (0, 140, 255), 3)
+                    for hoop_det in hoops:
+                        if hoop_det.get("conf", 0) < 0.25:
+                            continue
+                        x1, y1 = int(hoop_det["x1"]), int(hoop_det["y1"])
+                        x2, y2 = int(hoop_det["x2"]), int(hoop_det["y2"])
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+
                 # Segunda pasada para calcular posesión si hay pelota
                 if ball_pos_this_frame:
                     bcx, bcy = ball_pos_this_frame
                     best_dist = float('inf')
                     best_name = None
-                    for i, cls_id in enumerate(boxes.cls.tolist()):
+                    for i, raw_cls_id in enumerate(boxes.cls.tolist()):
+                        cls_id = int(raw_cls_id)
                         if cls_id != PERSON_CLASS:
                             continue
                         x1, y1, x2, y2 = [int(v) for v in boxes.xyxy[i].tolist()]

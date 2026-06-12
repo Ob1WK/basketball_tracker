@@ -3,7 +3,7 @@
 Basketball Stats Tracker — Script de instalación y verificación.
 Correlo antes de la primera vez que uses la app.
 """
-import subprocess, sys, importlib, os, shutil, platform
+import subprocess, sys, importlib, os, shutil, platform, urllib.request
 
 # ── Colores ANSI ──────────────────────────────────────────────────────────
 GREEN  = "\033[92m"
@@ -64,6 +64,13 @@ try:
     print(f"  Descargando/verificando {model_name}...")
     m = YOLO(model_name)
     print(f"  {CHECK} Modelo cargado: {model_name}")
+    basket_model = "basketball_shot_yolov8.pt"
+    basket_url = "https://github.com/avishah3/AI-Basketball-Shot-Detection-Tracker/raw/master/best.pt"
+    if not os.path.exists(basket_model):
+        print(f"  Descargando modelo especializado basket ({basket_model})...")
+        urllib.request.urlretrieve(basket_url, basket_model)
+    bm = YOLO(basket_model)
+    print(f"  {CHECK} Modelo basket cargado: {basket_model} {bm.names}")
 except Exception as e:
     print(f"  {WARN} Error con YOLO: {e}")
     print(f"  El modelo se descargará automáticamente al detectar el primer video.")
