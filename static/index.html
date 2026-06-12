@@ -654,6 +654,34 @@ body::before {
 }
 .format-btn.selected .format-label { color: var(--accent2); }
 
+/* ===== MERGE MODE ===== */
+.merge-banner {
+  background: rgba(249,115,22,0.1); border: 1px solid var(--accent);
+  border-radius: var(--radius); padding: 12px 16px;
+  font-size: 13px; color: var(--accent2);
+  display: flex; align-items: center; gap: 10px; margin-bottom: 16px;
+  animation: pulseBorder 1.5s ease-in-out infinite;
+}
+@keyframes pulseBorder { 0%, 100% { border-color: var(--accent); } 50% { border-color: var(--accent2); } }
+.merge-banner .merge-cancel { cursor: pointer; margin-left: auto; color: var(--text-muted); font-size: 12px; text-decoration: underline; }
+.player-card.merge-selectable { cursor: pointer; }
+.player-card.merge-selectable:hover { border-color: var(--accent) !important; box-shadow: 0 0 16px var(--accent-glow); }
+.player-card.merge-selected { border-color: var(--accent) !important; box-shadow: 0 0 20px var(--accent-glow); }
+.player-card.merge-selected::before {
+  content: '1'; position: absolute; top: -8px; left: -8px;
+  background: var(--accent-gradient); color: #fff; width: 24px; height: 24px;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 800; z-index: 5;
+}
+.player-card.merge-second::before { content: '2'; }
+.skip-video-row {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
+  padding: 12px 16px; background: var(--card); border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+.skip-video-row label { font-size: 13px; color: var(--text-secondary); cursor: pointer; }
+.skip-video-row .toggle { flex-shrink: 0; }
+
 /* ===== TOAST ===== */
 .toast-container {
   position: fixed; bottom: 24px; right: 24px; z-index: 9999;
@@ -929,9 +957,17 @@ body::before {
         <button class="btn btn-secondary btn-sm" onclick="quickNames()">⚡ Nombres rápidos</button>
         <button class="btn btn-secondary btn-sm" onclick="allTeam('A')">🔵 Todo Equipo A</button>
         <button class="btn btn-secondary btn-sm" onclick="allTeam('B')">🔴 Todo Equipo B</button>
+        <button class="btn btn-secondary btn-sm" id="btnMerge" onclick="startMergeMode()">🔗 Fusionar jugadores</button>
       </div>
 
+      <div id="mergeBanner" style="display:none"></div>
+
       <div class="player-grid" id="playerGrid"></div>
+
+      <div class="skip-video-row">
+        <div class="toggle on" id="skipVideoToggle" onclick="this.classList.toggle('on')"><div class="toggle-thumb"></div></div>
+        <label onclick="document.getElementById('skipVideoToggle').classList.toggle('on')">Solo estadísticas (sin video anotado — mucho más rápido)</label>
+      </div>
 
       <button class="btn btn-primary" id="btnAnalyze" onclick="assignAndAnalyze()">
         📊 Analizar y Generar Estadísticas
@@ -1465,6 +1501,100 @@ function allTeam(t) {
 }
 
 /* ======================================================================
+   MERGE PLAYERS
+   ====================================================================== */
+let mergeMode = false;
+let mergeFirst = null;
+
+function startMergeMode() {
+  if (mergeMode) { cancelMerge(); return; }
+  mergeMode = true;
+  mergeFirst = null;
+  document.getElementById('btnMerge').textContent = '❌ Cancelar fusión';
+  document.getElementById('mergeBanner').style.display = 'flex';
+  document.getElementById('mergeBanner').innerHTML = `
+    <span>🔗</span>
+    <span>Hacé click en el <strong>primer jugador</strong> que querés mantener</span>
+    <span class="merge-cancel" onclick="cancelMerge()">Cancelar</span>
+  `;
+  document.getElementById('mergeBanner').className = 'merge-banner';
+  document.querySelectorAll('.player-card').forEach(c => {
+    c.classList.add('merge-selectable');
+    c.addEventListener('click', onMergeClick);
+  });
+}
+
+function cancelMerge() {
+  mergeMode = false;
+  mergeFirst = null;
+  document.getElementById('btnMerge').textContent = '🔗 Fusionar jugadores';
+  document.getElementById('mergeBanner').style.display = 'none';
+  document.querySelectorAll('.player-card').forEach(c => {
+    c.classList.remove('merge-selectable', 'merge-selected', 'merge-second');
+    c.removeEventListener('click', onMergeClick);
+  });
+}
+
+function onMergeClick(e) {
+  if (!mergeMode) return;
+  e.stopPropagation();
+  const card = e.currentTarget;
+  const tid = card.dataset.tid;
+
+  if (!mergeFirst) {
+    // Primera selección
+    mergeFirst = tid;
+    card.classList.add('merge-selected');
+    document.getElementById('mergeBanner').innerHTML = `
+      <span>🔗</span>
+      <span>Ahora hacé click en el <strong>segundo jugador</strong> (el que es la misma persona)</span>
+      <span class="merge-cancel" onclick="cancelMerge()">Cancelar</span>
+    `;
+  } else if (tid !== mergeFirst) {
+    // Segunda selección: fusionar
+    card.classList.add('merge-second');
+    doMerge(mergeFirst, tid);
+  }
+}
+
+async function doMerge(keepId, mergeId) {
+  try {
+    const r = await fetch(`/merge_tracks/${jobId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keep: keepId, merge: mergeId })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Error');
+
+    showToast(`Jugador #${mergeId} fusionado con #${keepId} (${formatNumber(d.new_frame_count)} frames)`, 'success');
+
+    // Remover la card del track absorbido
+    const mergedCard = document.querySelector(`.player-card[data-tid="${mergeId}"]`);
+    if (mergedCard) {
+      mergedCard.style.transition = 'all .3s';
+      mergedCard.style.opacity = '0';
+      mergedCard.style.transform = 'scale(0.8)';
+      setTimeout(() => mergedCard.remove(), 300);
+    }
+    // Actualizar frame count en la card mantenida
+    const keptCard = document.querySelector(`.player-card[data-tid="${keepId}"]`);
+    if (keptCard) {
+      const framesEl = keptCard.querySelector('.player-frames');
+      if (framesEl) framesEl.textContent = formatNumber(d.new_frame_count) + ' frames';
+    }
+    // Actualizar summary
+    const countEl = document.querySelector('.summary-stat .val');
+    if (countEl) countEl.textContent = d.remaining_tracks;
+
+    cancelMerge();
+  } catch (err) {
+    showToast('Error al fusionar: ' + err.message, 'error');
+    cancelMerge();
+  }
+}
+
+/* ======================================================================
    PANEL 3→4: ANALYZE
    ====================================================================== */
 async function assignAndAnalyze() {
@@ -1498,8 +1628,13 @@ async function assignAndAnalyze() {
     });
     if (!ar.ok) throw new Error(`Assign HTTP ${ar.status}`);
 
-    // Start analysis
-    const anr = await fetch(`/analyze/${jobId}`, { method: 'POST' });
+    // Start analysis (with skip_video option)
+    const skipVideo = document.getElementById('skipVideoToggle').classList.contains('on');
+    const anr = await fetch(`/analyze/${jobId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ skip_video: skipVideo })
+    });
     if (!anr.ok) throw new Error(`Analyze HTTP ${anr.status}`);
 
     document.getElementById('analyzeProgressWrap').style.display = 'block';

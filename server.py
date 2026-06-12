@@ -448,8 +448,68 @@ async def assign_players(job_id: str, data: dict):
     return {"ok": True, "players": len(job["player_map"])}
 
 
+@app.post("/merge_tracks/{job_id}")
+async def merge_tracks(job_id: str, data: dict):
+    """
+    Fusiona dos tracks manualmente (el usuario identifica que son la misma persona).
+    Recibe: { "keep": 2, "merge": 147 } donde keep es el track a mantener
+    y merge es el track a absorber.
+    """
+    if job_id not in jobs:
+        return JSONResponse({"error": "Job no encontrado"}, status_code=404)
+
+    job = jobs[job_id]
+    keep_id = data.get('keep')
+    merge_id = data.get('merge')
+
+    if keep_id is None or merge_id is None:
+        return JSONResponse({'error': 'Se requieren keep y merge'}, status_code=400)
+
+    # Convertir a int para comparar con las claves del track_data
+    keep_id = int(keep_id)
+    merge_id = int(merge_id)
+
+    raw = job.get('_raw_track_data', {})
+    dr = job.get('detection_result', {})
+
+    if keep_id not in raw or merge_id not in raw:
+        return JSONResponse({'error': 'Track ID no encontrado'}, status_code=404)
+
+    # Fusionar frames y bbox_history
+    keep_track = raw[keep_id]
+    merge_track = raw[merge_id]
+    merged_frames = sorted(set(keep_track['frames']) | set(merge_track['frames']))
+    merged_bboxes = sorted(
+        keep_track.get('bbox_history', []) + merge_track.get('bbox_history', []),
+        key=lambda b: b['frame']
+    )
+    keep_track['frames'] = merged_frames
+    keep_track['bbox_history'] = merged_bboxes
+
+    # Eliminar el track absorbido
+    del raw[merge_id]
+
+    # Actualizar detection_result
+    tracks_dict = dr.get('tracks', {})
+    if str(keep_id) in tracks_dict:
+        tracks_dict[str(keep_id)]['frame_count'] = len(merged_frames)
+    if str(merge_id) in tracks_dict:
+        del tracks_dict[str(merge_id)]
+    dr['track_ids'] = [tid for tid in dr.get('track_ids', []) if tid != merge_id]
+
+    print(f'\U0001f517 Tracks fusionados: {merge_id} -> {keep_id} (job {job_id})')
+
+    return {
+        'ok': True,
+        'kept': keep_id,
+        'merged': merge_id,
+        'new_frame_count': len(merged_frames),
+        'remaining_tracks': len(raw),
+    }
+
+
 @app.post("/analyze/{job_id}")
-async def analyze_game(job_id: str):
+async def analyze_game(job_id: str, data: dict = {}):
     """
     Lanza el análisis estadístico completo en segundo plano.
     Requiere que los jugadores ya estén asignados.
@@ -463,6 +523,9 @@ async def analyze_game(job_id: str):
             {"error": "Primero detectá y asigná jugadores"},
             status_code=400
         )
+
+    # Guardar opción de skip video
+    job['skip_video'] = data.get('skip_video', False) if isinstance(data, dict) else False
 
     job['status'] = 'analyzing'
     job['progress'] = 0
@@ -788,25 +851,30 @@ def _analyze_worker(job_id: str):
         )
         job['stats'] = stats
 
-        # ── Etapa 2: Generación de video anotado (60-95%) ────────────────
-        def progress_video(pct):
-            """Callback de progreso para la generación del video."""
-            job['progress'] = 60 + int(pct * 0.35)
-            job['stage'] = 'Generando video anotado...'
+        # ── Etapa 2: Generación de video anotado (60-95%) - OPCIONAL ──────
+        annotated_path = None
+        skip_video = job.get('skip_video', False)
 
-        annotated_path = _generate_annotated_video(
-            job_id, job, player_map, hoop, stats,
-            progress_callback=progress_video,
-        )
+        if not skip_video:
+            def progress_video(pct):
+                job['progress'] = 60 + int(pct * 0.35)
+                job['stage'] = 'Generando video anotado...'
 
-        # ── Etapa 3: Fusión de audio (95-100%) ───────────────────────────
-        job['progress'] = 95
-        job['stage'] = 'Fusionando audio...'
-        if annotated_path:
-            full_annotated = str(PROC_DIR / annotated_path.lstrip("/processed/"))
-            annotated_path_final = _try_merge_audio(job["video_path"], full_annotated)
-            # Mantener la ruta relativa para servir por HTTP
-            annotated_path = f"/processed/{Path(annotated_path_final).name}"
+            annotated_path = _generate_annotated_video(
+                job_id, job, player_map, hoop, stats,
+                progress_callback=progress_video,
+            )
+
+            # ── Etapa 3: Fusión de audio (95-100%) ───────────────────────
+            job['progress'] = 95
+            job['stage'] = 'Fusionando audio...'
+            if annotated_path:
+                full_annotated = str(PROC_DIR / annotated_path.lstrip("/processed/"))
+                annotated_path_final = _try_merge_audio(job["video_path"], full_annotated)
+                annotated_path = f"/processed/{Path(annotated_path_final).name}"
+        else:
+            job['progress'] = 95
+            job['stage'] = 'Video anotado omitido'
 
         # ── Completado ───────────────────────────────────────────────────
         job["annotated_video"] = annotated_path
