@@ -162,99 +162,114 @@ def _estimate_hoop(ball_positions, h, w):
 def _consolidate_tracks(track_data, expected_players, fps, sample_every):
     """
     Consolida tracks fragmentados que probablemente pertenecen a la misma persona.
-    El tracker de YOLO pierde IDs frecuentemente, creando múltiples tracks
-    para una misma persona. Esta función los fusiona.
-
-    Criterios de fusión:
-    - Los tracks NO se solapan temporalmente (o se solapan < 10%)
-    - La última posición de un track está cerca de la primera del siguiente
+    Usa un algoritmo de fusión iterativo greedy:
+    1. Calcula la "posición promedio" de cada track
+    2. Busca pares de tracks con bajo solapamiento temporal
+    3. Fusiona el par más compatible (menor solapamiento + menor distancia)
+    4. Repite hasta llegar al número esperado de jugadores
     """
     if len(track_data) <= expected_players:
-        return track_data  # Ya tenemos la cantidad esperada o menos
+        return track_data
 
-    # Ordenar tracks por cantidad de frames (descendente)
-    sorted_tids = sorted(
-        track_data.keys(),
-        key=lambda tid: len(track_data[tid]['frames']),
-        reverse=True
-    )
+    # Construir dict mutable de tracks
+    tracks = {}
+    for tid, td in track_data.items():
+        frames_set = set(td['frames'])
+        bboxes = sorted(td['bbox_history'], key=lambda b: b['frame'])
+        # Posición promedio del track
+        avg_cx = np.mean([b['cx'] for b in bboxes]) if bboxes else 0
+        avg_cy = np.mean([b['cy'] for b in bboxes]) if bboxes else 0
+        tracks[tid] = {
+            'frames': frames_set,
+            'bbox_history': bboxes,
+            'thumbnail': td.get('thumbnail'),
+            'first_frame': td.get('first_frame', 0),
+            'avg_cx': avg_cx,
+            'avg_cy': avg_cy,
+        }
 
-    merged = {}       # tid_principal -> datos fusionados
-    absorbed = set()  # tids que ya fueron absorbidos por otro
+    def _overlap_pct(a, b):
+        """Porcentaje de frames compartidos entre dos tracks."""
+        if not a or not b:
+            return 0.0
+        overlap = len(a & b)
+        return overlap / min(len(a), len(b))
 
-    for tid in sorted_tids:
-        if tid in absorbed:
-            continue
+    def _merge_score(tid_a, tid_b):
+        """
+        Score de compatibilidad para fusionar dos tracks.
+        Retorna None si son incompatibles, o un score (menor = mejor).
+        """
+        ta = tracks[tid_a]
+        tb = tracks[tid_b]
+        overlap = _overlap_pct(ta['frames'], tb['frames'])
+        # Si se solapan más del 30%, son personas distintas
+        if overlap > 0.30:
+            return None
+        # Distancia espacial promedio
+        spatial_dist = math.hypot(
+            ta['avg_cx'] - tb['avg_cx'],
+            ta['avg_cy'] - tb['avg_cy']
+        )
+        # Score: combinar solapamiento y distancia
+        # Penalizar solapamiento mucho más que distancia
+        score = spatial_dist + overlap * 5000
+        return score
 
-        td = track_data[tid]
-        merged_frames = set(td['frames'])
-        merged_bboxes = list(td['bbox_history'])
+    def _do_merge(main_tid, other_tid):
+        """Fusiona other_tid en main_tid."""
+        main = tracks[main_tid]
+        other = tracks[other_tid]
+        main['frames'].update(other['frames'])
+        main['bbox_history'] = sorted(
+            main['bbox_history'] + other['bbox_history'],
+            key=lambda b: b['frame']
+        )
+        # Recalcular posición promedio
+        all_bboxes = main['bbox_history']
+        main['avg_cx'] = np.mean([b['cx'] for b in all_bboxes])
+        main['avg_cy'] = np.mean([b['cy'] for b in all_bboxes])
+        # Mantener el mejor thumbnail (del track con más frames originales)
+        if not main.get('thumbnail') and other.get('thumbnail'):
+            main['thumbnail'] = other['thumbnail']
+        del tracks[other_tid]
 
-        # Intentar absorber tracks más pequeños
-        for other_tid in sorted_tids:
-            if other_tid == tid or other_tid in absorbed:
-                continue
+    # Iteración: seguir fusionando hasta llegar al target
+    max_iterations = 500  # safety limit
+    iteration = 0
+    while len(tracks) > expected_players and iteration < max_iterations:
+        iteration += 1
+        best_score = None
+        best_pair = None
 
-            other_td = track_data[other_tid]
-            other_frames = set(other_td['frames'])
+        tids = list(tracks.keys())
+        for i in range(len(tids)):
+            for j in range(i + 1, len(tids)):
+                score = _merge_score(tids[i], tids[j])
+                if score is not None and (best_score is None or score < best_score):
+                    best_score = score
+                    # Fusionar el más pequeño en el más grande
+                    if len(tracks[tids[i]]['frames']) >= len(tracks[tids[j]]['frames']):
+                        best_pair = (tids[i], tids[j])
+                    else:
+                        best_pair = (tids[j], tids[i])
 
-            # Calcular solapamiento temporal
-            overlap = len(merged_frames & other_frames)
-            overlap_pct = overlap / max(1, len(other_frames))
+        if best_pair is None:
+            break  # No hay más pares fusionables
 
-            if overlap_pct > 0.1:
-                continue  # Más del 10% de solapamiento = personas distintas
+        _do_merge(best_pair[0], best_pair[1])
+        print(f'    ⤴️ Fusionado track {best_pair[1]} -> {best_pair[0]} (score: {best_score:.0f}, quedan: {len(tracks)})')
 
-            # Calcular proximidad espacial entre fin de uno e inicio del otro
-            my_bboxes = sorted(merged_bboxes, key=lambda b: b['frame'])
-            other_bboxes = sorted(other_td['bbox_history'], key=lambda b: b['frame'])
-
-            if not my_bboxes or not other_bboxes:
-                continue
-
-            # Verificar si el otro track empieza donde este termina (o viceversa)
-            can_merge = False
-            # Caso 1: otro track empieza después de que termina este
-            my_last = my_bboxes[-1]
-            other_first = other_bboxes[0]
-            time_gap = abs(other_first['frame'] - my_last['frame'])
-            spatial_dist = math.hypot(
-                my_last['cx'] - other_first['cx'],
-                my_last['cy'] - other_first['cy']
-            )
-            # Dentro de 3 segundos y 200px de distancia = misma persona
-            max_time_gap = fps * 3 * sample_every
-            max_spatial_dist = 200
-            if time_gap < max_time_gap and spatial_dist < max_spatial_dist:
-                can_merge = True
-
-            # Caso 2: otro track termina antes de que empiece este
-            if not can_merge:
-                other_last = other_bboxes[-1]
-                my_first = my_bboxes[0]
-                time_gap = abs(my_first['frame'] - other_last['frame'])
-                spatial_dist = math.hypot(
-                    other_last['cx'] - my_first['cx'],
-                    other_last['cy'] - my_first['cy']
-                )
-                if time_gap < max_time_gap and spatial_dist < max_spatial_dist:
-                    can_merge = True
-
-            if can_merge:
-                # Absorber el otro track
-                merged_frames.update(other_frames)
-                merged_bboxes.extend(other_td['bbox_history'])
-                absorbed.add(other_tid)
-
-        # Guardar el track fusionado
-        merged[tid] = {
-            'frames': sorted(merged_frames),
-            'bbox_history': sorted(merged_bboxes, key=lambda b: b['frame']),
+    # Convertir de vuelta al formato esperado
+    result = {}
+    for tid, td in tracks.items():
+        result[tid] = {
+            'frames': sorted(td['frames']),
+            'bbox_history': td['bbox_history'],
             'thumbnail': td.get('thumbnail'),
             'first_frame': td.get('first_frame', 0),
         }
-
-    return merged
+    return result
 
 
 def _try_merge_audio(original_path: str, annotated_path: str) -> str:
@@ -581,7 +596,8 @@ def _detect_worker(job_id: str):
                 results = model.track(
                     frame, persist=True,
                     classes=[PERSON_CLASS, SPORTS_BALL_CLASS],
-                    conf=0.35, iou=0.45, verbose=False
+                    conf=0.3, iou=0.6, verbose=False,
+                    tracker='bytetrack.yaml'
                 )
 
                 if results and results[0].boxes is not None:
